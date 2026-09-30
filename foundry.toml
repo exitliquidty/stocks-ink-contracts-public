@@ -1,0 +1,44 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+# Pinned, not auto-detected: a different compiler version can change bytecode, CREATE2 addresses
+# and audit correspondence, and StocksHook has only 585 bytes of EIP-170 headroom left. This must
+# match SOLC_COMMIT_HASHES in scripts/generate-verification-inputs.js (frontend) if it ever moves.
+solc_version = "0.8.26"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+via_ir = true
+
+remappings = [
+    "@openzeppelin/=lib/openzeppelin-contracts/",
+    "@uniswap/v4-core/=lib/v4-core/",
+]
+
+# Scoped to just the local E2E script hand-off files (script/*.s.sol writing/reading these
+# between two script runs) -- not a general filesystem opt-out.
+fs_permissions = [
+  { access = "read-write", path = "e2e-addresses.json" },
+  { access = "read-write", path = "e2e-eth-addresses.json" },
+  { access = "read-write", path = "e2e-governance-addresses.json" },
+  # read-only list of every xStock and wrapper the app offers, used by test/StocksWrappers.realInk.t.sol
+  { access = "read", path = "test/data/ink_stocks.csv" },
+]
+
+# StocksHook is right at EIP-170's 24,576-byte deploy limit. Lowering optimizer_runs favors
+# smaller bytecode over cheaper repeated execution -- scoped to just this file (via the
+# restriction below) so the rest of the repo keeps the normal runs=200 gas profile.
+additional_compiler_profiles = [
+  { name = "stockshook-size", optimizer_runs = 1 },
+]
+
+[[profile.default.compilation_restrictions]]
+paths = "src/dex/v4/StocksHook.sol"
+optimizer_runs = 1
+
+[rpc_endpoints]
+ink = "https://rpc-gel.inkonchain.com"
+
+[etherscan]
+ink = { key = "${INK_EXPLORER_API_KEY}", url = "https://explorer.inkonchain.com/api" }
