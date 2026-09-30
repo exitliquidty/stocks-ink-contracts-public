@@ -84,12 +84,31 @@ contract StocksGraduator is IUnlockCallback, ReentrancyGuard {
     ) external nonReentrant returns (address poolView) {
         if (msg.sender != ICurveRegistry(factory).curveOf(tstToken)) revert NotCurve();
         if (tstAmount == 0 || stockAmount == 0) revert ZeroAmount();
+
+        // External audit finding (AuditAgent, 2026-09-30): unlike StocksCurve.buy(), this used to pull
+        // `tstAmount`/`stockAmount` via a plain safeTransferFrom and trust the caller-supplied nominal
+        // figures for every downstream check and calculation -- a token that charges a fee on THIS
+        // specific curve-to-graduator transfer (distinct from, and not caught by, the curve's own
+        // inbound-fee handling on its OWN buy() transfers) could leave the graduator holding less than
+        // `stockAmount`/`tstAmount`, while every size/seed check and the pool-seeding math still used the
+        // larger nominal figures. Fixed to mirror buy()'s own actualStockIn pattern exactly: measure the
+        // real balance delta after each transfer, and re-run every check against the ACTUAL amounts
+        // received, not the nominal ones requested. Currently theoretical, not reachable -- the real
+        // 723-wrapper sweep already confirms none of the currently-attestable tokens charge any transfer
+        // fee -- fixed for the same defense-in-depth reason as StocksCurve.sell()'s equivalent fix.
+        uint256 tstBalanceBefore = IERC20(tstToken).balanceOf(address(this));
+        IERC20(tstToken).safeTransferFrom(msg.sender, address(this), tstAmount);
+        tstAmount = IERC20(tstToken).balanceOf(address(this)) - tstBalanceBefore;
+
+        uint256 stockBalanceBefore = IERC20(stockToken).balanceOf(address(this));
+        IERC20(stockToken).safeTransferFrom(msg.sender, address(this), stockAmount);
+        stockAmount = IERC20(stockToken).balanceOf(address(this)) - stockBalanceBefore;
+
+        if (tstAmount == 0 || stockAmount == 0) revert ZeroAmount();
         if (tstAmount <= HOOK_TST_RESERVE_WEI || stockAmount <= HOOK_STOCK_RESERVE_WEI) revert SeedTooSmall();
         if (tstAmount * BPS_DENOM < IERC20(tstToken).totalSupply() * MIN_TST_SEED_SUPPLY_BPS) {
             revert SeedTooSmall();
         }
-        IERC20(tstToken).safeTransferFrom(msg.sender, address(this), tstAmount);
-        IERC20(stockToken).safeTransferFrom(msg.sender, address(this), stockAmount);
 
         bool tstIsCurrency0 = tstToken < stockToken;
         (Currency c0, Currency c1) = tstIsCurrency0

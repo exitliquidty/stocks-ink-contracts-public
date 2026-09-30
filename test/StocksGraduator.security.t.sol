@@ -145,9 +145,18 @@ contract StocksGraduatorSecurityTest is Test {
     // Defense-in-depth: even the pair's OWN registered curve can't graduate with a dust-sized
     // seed -- H-1's floor still matters for a legitimate-but-misbehaving/buggy caller, not just
     // as a historical artifact now that H-3 handles the outsider case.
+    //
+    // External AuditAgent finding #9 (2026-09-30) fix: graduate() now measures its ACTUAL
+    // received balance-diff (fee-on-transfer protection) by pulling BEFORE checking SeedTooSmall,
+    // instead of checking the caller-supplied amount first and pulling after. A real curve always
+    // approves exactly what it's about to send, so this test now does too -- otherwise the pull
+    // itself reverts with ERC20InsufficientAllowance before ever reaching the check this test
+    // means to exercise.
     function test_RevertWhen_RegisteredCurveSendsDust() public {
         (MockERC20G tst, MockERC20G stock) = _freshPair("A2");
         uint256 dust = 1e6;
+        tst.approve(address(graduator), dust);
+        stock.approve(address(graduator), dust);
 
         vm.expectRevert(StocksGraduator.SeedTooSmall.selector);
         graduator.graduate(address(tst), address(stock), realTreasury, realProtocol, FEE_BPS, dust, dust);
@@ -159,6 +168,8 @@ contract StocksGraduatorSecurityTest is Test {
         (MockERC20G tst, MockERC20G stock) = _freshPair("B");
         uint256 threshold = (tst.totalSupply() * graduator.MIN_TST_SEED_SUPPLY_BPS()) / graduator.BPS_DENOM();
         uint256 justUnder = threshold - 1;
+        tst.approve(address(graduator), justUnder);
+        stock.approve(address(graduator), 1e18);
 
         vm.expectRevert(StocksGraduator.SeedTooSmall.selector);
         graduator.graduate(address(tst), address(stock), realTreasury, realProtocol, FEE_BPS, justUnder, 1e18);

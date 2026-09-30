@@ -104,15 +104,17 @@ contract StocksCurveAudit3Test is Test {
         return abi.encodePacked(r, s, v);
     }
 
-    /// @notice FINDING (Low): sell()'s SlippageExceeded check compares the QUOTED stockOut against
-    /// minStockOut, then transfers stockOut out -- for a fee-on-transfer stockToken, the seller
-    /// receives LESS than both the quote and their own minStockOut guarantee, and nothing catches
-    /// it. Distinct from the already-reported graduation-bricking finding: this affects ordinary
-    /// buy()/sell() trading on such a curve (which works fine pre-graduation), not just graduation
-    /// itself. The CURVE's own accounting stays internally consistent throughout (realStockCollected
-    /// tracks exactly what leaves its own balance, confirmed below) -- this is a seller-side value
-    /// leak, not a protocol insolvency.
-    function test_AUDIT_Sell_FeeOnTransferStock_SellerReceivesLessThanQuotedMinOut() public {
+    /// @notice FIXED (external AuditAgent scan, 2026-09-30, finding #3 -- independently matches this
+    /// file's own earlier-documented Low finding, originally titled
+    /// test_AUDIT_Sell_FeeOnTransferStock_SellerReceivesLessThanQuotedMinOut): sell() now measures
+    /// the seller's ACTUAL received balance-diff (mirroring buy()'s existing incoming-leg
+    /// protection) and checks THAT against minStockOut, instead of comparing minStockOut against
+    /// the pre-fee quoted amount. A seller who (reasonably, with no way to know about the token's
+    /// fee) sets minStockOut to the exact quote now correctly reverts with SlippageExceeded instead
+    /// of silently receiving less than they required. No real xStock wrapper currently has transfer
+    /// fees (see the 723-wrapper sweep elsewhere in this suite) -- this is defense-in-depth against
+    /// value leakage, verified end-to-end here rather than left theoretical.
+    function test_AUDIT_Sell_FeeOnTransferStock_RevertsInsteadOfUnderpayingTheSeller() public {
         FeeOnTransferStock stock = new FeeOnTransferStock("FeeStock", "FEE", SUPPLY);
         uint256 price = 100e18;
         uint256 priceTimestamp = block.timestamp;
@@ -141,29 +143,33 @@ contract StocksCurveAudit3Test is Test {
         uint256 curveBalanceBefore = stock.balanceOf(address(curve));
         assertEq(realCollectedBefore, curveBalanceBefore, "sanity: accounting matches real balance exactly pre-sell");
 
-        // THE BUG: sell()'s SlippageExceeded check compares the QUOTED (pre-fee) stockOut against
-        // minStockOut -- it never looks at what the seller actually ends up holding. Setting
-        // minStockOut to the exact quote (the strongest guarantee a seller with no way to know
-        // about the token's fee could reasonably set) should be the seller's worst-case floor, but
-        // it does NOT revert here even though the seller is about to receive strictly less.
+        // THE FIX IN ACTION: setting minStockOut to the exact pre-fee quote (the strongest
+        // guarantee a seller with no way to know about the token's fee could reasonably set) now
+        // correctly reverts, since the seller's actual balance-diff receipt is strictly less than
+        // that quote once the destination-side transfer fee is applied.
         uint256 quoted = curve.quoteSell(tstReceived);
 
+        vm.prank(trader);
+        vm.expectRevert(StocksCurve.SlippageExceeded.selector);
+        curve.sell(tstReceived, quoted);
+        console.log("CONFIRMED FIXED: sell() now reverts rather than silently underpaying the seller");
+
+        // A seller who instead sets minStockOut to what they'll actually receive (accounting for
+        // the token's own 5% fee themselves) still succeeds, and gets paid exactly that real amount.
+        uint256 feeAwareMinOut = (quoted * 95) / 100;
         uint256 sellerBalanceBefore = stock.balanceOf(trader);
         vm.prank(trader);
-        uint256 reportedStockOut = curve.sell(tstReceived, quoted);
+        uint256 reportedStockOut = curve.sell(tstReceived, feeAwareMinOut);
         uint256 actuallyReceived = stock.balanceOf(trader) - sellerBalanceBefore;
 
-        assertEq(reportedStockOut, quoted, "sell() reports/returns the pre-fee quoted amount, not reality");
-        assertLt(actuallyReceived, reportedStockOut, "BUG: seller actually receives less than sell()'s own return value");
-        assertLt(actuallyReceived, quoted, "BUG: seller receives less than the minStockOut they explicitly required");
-        console.log("Quoted / reported stockOut:", reportedStockOut);
-        console.log("Actually received by seller:", actuallyReceived);
-        console.log("CONFIRMED: sell() silently pays the seller less than their own minStockOut on a fee-on-transfer stock");
+        assertEq(reportedStockOut, actuallyReceived, "sell() now reports/returns the seller's real balance-diff receipt");
+        assertGe(actuallyReceived, feeAwareMinOut, "seller received at least their fee-aware minStockOut");
+        assertLt(actuallyReceived, quoted, "sanity: the fee is genuinely still being paid on this token");
 
         // The CURVE's own internal accounting stays exactly self-consistent throughout -- it debits
-        // realStockCollected by the same pre-fee `stockOut` amount that actually leaves its balance
-        // (the fee is paid by the curve-as-sender, not deducted from the ledger separately), so this
-        // is purely a seller-side value leak, not a protocol insolvency.
+        // realStockCollected by the same pre-fee `quotedStockOut` amount that actually leaves its
+        // own balance (the fee is paid by the curve-as-sender, not deducted from the ledger
+        // separately), so this was always a seller-side value leak, never a protocol insolvency.
         assertEq(
             curve.realStockCollected(),
             stock.balanceOf(address(curve)),

@@ -60,6 +60,23 @@ contract StocksLaunchFactory is ReentrancyGuard {
     error InvalidVotingPeriod();
     error InvalidGraduationThreshold();
     error InvalidProposalThreshold();
+    error NameTooLongForGraduation();
+
+    // External audit finding (AuditAgent, 2026-09-30): TSTToken's own constructor already caps `name`
+    // at 31 bytes (ShortStrings, via its own EIP712(name_, "1")), so a name up to 31 bytes deploys fine
+    // here -- but StocksCurve._graduate() later passes `string.concat(tstToken.name(), " GOVERNOR_SUFFIX")`
+    // to StocksGovernorFactory, whose EIP712 constructor has the SAME 31-byte ShortStrings limit. A name
+    // of 23-31 bytes therefore launches, collects stock, and reaches its graduation target normally, then
+    // PERMANENTLY reverts at graduate() forever (the name is immutable, so there is no way to recover).
+    // Proven directly (a real Foundry test: a 24-byte name graduates-reverts identically on every retry).
+    // Capped here, at launch, to the largest length that can never hit that later limit -- the same
+    // "validate at launch, not discover at graduation" philosophy as this contract's other checks.
+    // `bytes(literal).length` isn't a compile-time constant in this solc version, so this stays a plain
+    // number rather than a derived one -- kept in sync with StocksCurve._graduate()'s own
+    // `string.concat(tstToken.name(), " Governor")` by a dedicated regression test
+    // (test/AuditAgentVerify.longName.t.sol) that fails loudly if either side ever changes without the
+    // other: " Governor" is 9 bytes, so 31 (ShortStrings' cap) - 9 = 22.
+    uint256 internal constant MAX_TST_NAME_BYTES = 22;
 
     constructor(
         address _trustedSigner,
@@ -121,6 +138,7 @@ contract StocksLaunchFactory is ReentrancyGuard {
         if (rewardsDuration < minRewardsDuration || rewardsDuration > maxRewardsDuration) {
             revert InvalidRewardsDuration();
         }
+        if (bytes(name).length > MAX_TST_NAME_BYTES) revert NameTooLongForGraduation();
 
         bytes32 attestationId = keccak256(abi.encodePacked(stockToken, price, priceTimestamp));
         if (usedAttestations[attestationId]) revert AttestationAlreadyUsed();

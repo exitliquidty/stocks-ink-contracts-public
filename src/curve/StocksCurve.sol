@@ -59,7 +59,14 @@ contract StocksCurve is ReentrancyGuard {
     uint256 public constant SNIPE_WINDOW = 60 seconds;
     uint256 public constant MAX_SNIPE_BUY_BPS = 500;
     uint256 public constant BPS_DENOM = 10_000;
-    uint256 public constant SOLDOUT_THRESHOLD_BPS = 9_900;
+    // External audit finding (AuditAgent, 2026-09-30): at the old 9,900 (99%) threshold, `remaining`
+    // (CURVE_SUPPLY * 1% = 8,000,000e18 TST) was already below StocksGraduator's own 10,000,000e18 TST
+    // minimum seed (1% of TOTAL_SUPPLY) -- the sold-out graduation path was mathematically guaranteed to
+    // revert SeedTooSmall at its own trigger point, every time, for every launch. Lowered to a threshold
+    // with real margin under the new buy()-side SeedWouldBeUnreachable guard (which independently caps
+    // trading at roughly 98.75% in the best-funded case, less in others) so the sold-out path stays a
+    // genuinely reachable fallback rather than silently becoming dead code once that guard exists.
+    uint256 public constant SOLDOUT_THRESHOLD_BPS = 9_700;
     uint256 public constant FEE_BPS = 1000;
     uint256 public constant PRICE_MAX_AGE = 5 minutes;
     uint256 public constant PRICE_DECIMALS = 1e18;
@@ -98,6 +105,7 @@ contract StocksCurve is ReentrancyGuard {
     error StalePrice();
     error InvalidRewardsDuration();
     error UnsupportedStockDecimals();
+    error SeedWouldBeUnreachable();
 
     constructor(
         address _tstToken,
@@ -192,6 +200,44 @@ contract StocksCurve is ReentrancyGuard {
         if (tokensSold + tstOut > CURVE_SUPPLY) revert CurveSoldOut();
         if (tstOut < minTstOut) revert SlippageExceeded();
 
+        // External audit finding (AuditAgent, 2026-09-30): buy() had no cap preventing `tokensSold` from
+        // approaching CURVE_SUPPLY, so sufficiently aggressive buying -- via EITHER the target-reached OR
+        // sold-out graduation path, and regardless of which one a caller eventually uses -- could push
+        // `remaining` (and so the price-matched seed `_graduate()` computes) below StocksGraduator's own
+        // MIN_TST_SEED_SUPPLY_BPS floor, permanently preventing that curve from ever graduating. Confirmed
+        // directly: at exactly the 99% SOLDOUT_THRESHOLD_BPS trigger, `remaining` (8,000,000e18 TST) is
+        // already below the 10,000,000e18 TST minimum seed the graduator requires (1% of the full 1B
+        // TOTAL_SUPPLY) -- the sold-out path was mathematically guaranteed to be unseedable at its own
+        // trigger point, and continued buying past EITHER eligibility path could strand an otherwise-fine
+        // curve the same way.
+        //
+        // Guarded here by capping how far `remaining` can shrink, NOT by recomputing the full seed
+        // formula -- a first version of this fix DID recompute `_graduate()`'s own tstToSeed formula
+        // after every trade and was a genuine, real bug, caught before shipping: tstToSeed is
+        // (realStockCollected * remaining) / oldVirtualStock, which is naturally SMALL for a curve that
+        // has only just started (small realStockCollected), so checking its CURRENT value against the
+        // minimum incorrectly rejected completely ordinary early buying, long before the curve was even
+        // close to its own graduation target -- confirmed directly by the existing suite's own
+        // pre-existing tests immediately failing SeedWouldBeUnreachable() on perfectly ordinary trades.
+        // tstToSeed is always strictly LESS than `remaining` (proven algebraically elsewhere in this
+        // suite), so ensuring `remaining` alone never drops below the minimum is both NECESSARY (nothing
+        // above it could ever be seedable) and SUFFICIENT to prevent permanent bricking (not necessarily
+        // sufficient for graduate() to succeed on ANY given call -- realStockCollected still needs to
+        // catch up first if a curve JUST reached eligibility with little real stock collected -- but
+        // exactly like the existing, already-accepted `_graduate()` design for the sell()-side recovery
+        // path, more buying can always increase realStockCollected further without remaining ever
+        // shrinking again, so the curve can never become PERMANENTLY unseedable this way).
+        {
+            uint256 projectedTokensSold = tokensSold + tstOut;
+            uint256 projectedRemaining = CURVE_SUPPLY - projectedTokensSold;
+            // Mirrors StocksGraduator.MIN_TST_SEED_SUPPLY_BPS (100, i.e. 1%) directly -- a contract's own
+            // public constant isn't accessible via Type.CONSTANT syntax without an instance in this solc
+            // version, so this stays a literal, kept in sync by a dedicated regression test
+            // (test/AuditAgentVerify.soldoutSeedConflict.t.sol) that fails loudly if either side drifts.
+            uint256 minSeed = (TOTAL_SUPPLY * 100) / BPS_DENOM;
+            if (projectedRemaining < minSeed) revert SeedWouldBeUnreachable();
+        }
+
         if (block.timestamp < launchTimestamp + SNIPE_WINDOW) {
             uint256 totalBought = snipeWindowBought[msg.sender] + tstOut;
             if (totalBought > (CURVE_SUPPLY * MAX_SNIPE_BUY_BPS) / BPS_DENOM) revert SnipeCapExceeded();
@@ -211,15 +257,30 @@ contract StocksCurve is ReentrancyGuard {
         if (tstIn == 0) revert ZeroAmount();
         if (tstIn > tokensSold) revert InsufficientTstSupply();
 
-        stockOut = quoteSell(tstIn);
-        if (stockOut == 0) revert ZeroAmount();
-        if (stockOut < minStockOut) revert SlippageExceeded();
+        uint256 quotedStockOut = quoteSell(tstIn);
+        if (quotedStockOut == 0) revert ZeroAmount();
 
-        realStockCollected -= stockOut;
+        // The curve's own internal state always uses the NOMINAL quoted amount: the contract genuinely
+        // sends exactly `quotedStockOut` out of its own balance below, so this correctly reflects what
+        // left the curve regardless of what the stock token's own transfer logic later does to it.
+        realStockCollected -= quotedStockOut;
         tokensSold -= tstIn;
 
         IERC20(address(tstToken)).safeTransferFrom(msg.sender, address(this), tstIn);
-        stockToken.safeTransfer(msg.sender, stockOut);
+
+        // External audit finding (AuditAgent, 2026-09-30): minStockOut used to be checked against the
+        // nominal quoted amount BEFORE the transfer, not what the seller actually receives. If the stock
+        // token ever charged an outbound transfer fee (already confirmed, via the real 723-wrapper
+        // sweep, that none of the currently-attestable real tokens do -- this closes a theoretical gap,
+        // not a currently-reachable one), the seller could receive less than their own specified minimum
+        // while the check still passed. Fixed to mirror buy()'s own existing actualStockIn pattern
+        // exactly, on the output side instead of the input side: measure the real balance delta and
+        // check THAT against minStockOut, after the transfer -- the returned `stockOut` now means what
+        // the caller actually received, not merely what the curve nominally sent.
+        uint256 balanceBefore = stockToken.balanceOf(msg.sender);
+        stockToken.safeTransfer(msg.sender, quotedStockOut);
+        stockOut = stockToken.balanceOf(msg.sender) - balanceBefore;
+        if (stockOut < minStockOut) revert SlippageExceeded();
 
         emit Sold(msg.sender, tstIn, stockOut);
     }

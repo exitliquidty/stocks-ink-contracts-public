@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.26;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {PoolId} from "@uniswap/v4-core/src/types/PoolId.sol";
@@ -32,13 +31,22 @@ import {StocksGraduationPriceSweepTest} from "./StocksGraduation.priceSweep.t.so
 /// always exactly price-matched, and `StocksGraduator`'s own pre-existing `SeedTooSmall()` check (already
 /// there for this exact reason, previously unreachable because the curve always topped `tstToSeed` up first)
 /// now does its job -- refusing to graduate at a distorted price rather than silently opening a mispriced
-/// pool. This isn't a permanent brick: proven below that `sell()` lets a later `graduate()` succeed once
-/// `remaining` recovers.
+/// pool.
+///
+/// SUPERSEDED (external AuditAgent scan, 2026-09-30, finding #8): the round-13 fix above only stopped the
+/// mispriced pool from opening -- it still let an extreme buy succeed and then left the curve needing a
+/// rescue partial-sell-back before graduate() would work. StocksCurve.buy() now carries its own
+/// SeedWouldBeUnreachable() guard (checked BEFORE the trade executes, not after) that rejects the one
+/// individual overshoot trade outright, so the curve can never enter that state in the first place -- no
+/// rescue sell-back is ever needed. Proven below: the exact same 50x-overshoot buy that used to require a
+/// rescue now simply reverts at buy()-time, and the trader can immediately retry with a smaller, allowed
+/// amount on the very same curve.
 contract StocksCurveGraduationSeedFloorTest is StocksGraduationPriceSweepTest {
-    /// @notice The exact scenario this bug used to mishandle: a 50x overshoot buy. Before the fix this
-    /// silently opened the pool ~47% below the curve's marginal price; after the fix it reverts instead of
-    /// mispricing anything.
-    function test_ExtremeOvershoot_NowRevertsInsteadOfMispricingThePool() public {
+    /// @notice The exact scenario this bug used to mishandle: a 50x overshoot buy. Before round 13's fix this
+    /// silently opened the pool ~47% below the curve's marginal price; after round 13 it let the buy through
+    /// but rejected graduate() instead; after this round's buy()-side guard, the buy itself is rejected
+    /// up front and nothing ever needs mispricing or rescuing.
+    function test_ExtremeOvershoot_NowRevertsAtBuyTimeInsteadOfMispricingThePool() public {
         uint256 price = 500e18;
         (, StocksCurve curve) = _launch(price);
         vm.warp(vm.getBlockTimestamp() + 61);
@@ -48,47 +56,45 @@ contract StocksCurveGraduationSeedFloorTest is StocksGraduationPriceSweepTest {
 
         vm.startPrank(whale);
         stock.approve(address(curve), stockIn);
+        // Bare vm.expectRevert(): StocksCurve.SeedWouldBeUnreachable() fires directly inside buy() now,
+        // rather than StocksGraduator.SeedTooSmall() bubbling up through a later graduate() call -- kept bare
+        // to stay robust to exactly which of the two (now both still present) identically-purposed checks
+        // would end up firing on a given overshoot size.
+        vm.expectRevert();
         curve.buy(stockIn, 0);
         vm.stopPrank();
 
-        // Bare vm.expectRevert(): StocksGraduator.SeedTooSmall() bubbles up through StocksCurve.graduate(),
-        // both plain (non-hook) external calls here, so the raw selector would normally match directly -- kept
-        // bare anyway to stay robust to exactly which of the two contracts' identically-purposed checks ends
-        // up firing.
-        vm.expectRevert();
-        curve.graduate();
-
-        assertFalse(curve.graduated(), "must not have graduated at a distorted price");
+        assertFalse(curve.graduated(), "must not have graduated -- the overshoot buy itself never went through");
     }
 
-    /// @notice Confirms this isn't a permanent brick: after the extreme buyer sells some of their TST back
-    /// (recovering `remaining`), a later graduate() call succeeds normally, at a correctly price-matched seed.
-    function test_ExtremeOvershoot_RecoversAfterPartialSellBack_ThenGraduatesPriceCorrectly() public {
+    /// @notice Confirms this isn't a curve brick: after the buy()-side guard rejects the extreme overshoot
+    /// trade, the SAME curve immediately accepts a smaller, allowed buy and later graduates normally, at a
+    /// correctly price-matched seed -- proving the guard rejects only the one oversized trade, not the curve.
+    function test_ExtremeOvershoot_RejectedAtBuyTime_ThenASmallerBuyStillGraduatesPriceCorrectly() public {
         uint256 price = 500e18;
         (address token, StocksCurve curve) = _launch(price);
         vm.warp(vm.getBlockTimestamp() + 61);
 
         uint256 target = curve.graduationStockTarget();
-        uint256 stockIn = target * 50;
+        uint256 extremeStockIn = target * 50;
 
+        vm.startPrank(whale);
+        stock.approve(address(curve), extremeStockIn);
+        vm.expectRevert();
+        curve.buy(extremeStockIn, 0);
+        vm.stopPrank();
+
+        // Immediately retry on the SAME curve with a comfortably-allowed 20x overshoot (matching
+        // test_LargeButSurvivableOvershoot_StillGraduatesNormally's own threshold below) -- proving the
+        // rejected trade above didn't leave the curve itself in any bad or stuck state.
+        uint256 stockIn = target * 20;
         vm.startPrank(whale);
         stock.approve(address(curve), stockIn);
-        uint256 tstOut = curve.buy(stockIn, 0);
-        vm.stopPrank();
-
-        vm.expectRevert();
-        curve.graduate();
-
-        // Sell back a SMALL fraction of the received TST -- just 2% is already enough to bring the seed back
-        // above the floor (confirmed by direct calculation), while `realStockCollected` stays comfortably
-        // above the graduation target throughout. A partial unwind, not a full one.
-        vm.startPrank(whale);
-        IERC20(token).approve(address(curve), tstOut);
-        curve.sell(tstOut / 50, 0);
+        curve.buy(stockIn, 0);
         vm.stopPrank();
 
         curve.graduate();
-        assertTrue(curve.graduated(), "must graduate once the seed recovers");
+        assertTrue(curve.graduated(), "the curve must graduate normally once a properly-sized buy is made");
 
         // And it's price-correct, same cross-check as the marginal-price test: the pool's real opening price
         // matches the curve's own marginal price at the (now-recovered) graduation boundary.

@@ -132,12 +132,16 @@ contract StocksAuditR2ReentrancyAndGovernanceTest is StocksAuditR2GovernanceTest
         tst_.transfer(address(c), 1_000_000_000e18);
         vm.warp(block.timestamp + c.SNIPE_WINDOW() + 1);
 
-        stock_.mint(address(this), 5_000e18);
-        stock_.approve(address(c), 5_000e18);
+        // AuditAgent finding #8's fix: buy() now caps how far a trade can push `remaining` toward
+        // StocksGraduator's own minimum seed floor -- scaled down from 5_000e18 (which would consume
+        // nearly the entire curve against this fixture's own small virtual reserve); this test's own
+        // assertions only depend on the reentrancy guards firing, not on any specific buy amount.
+        stock_.mint(address(this), 10e18);
+        stock_.approve(address(c), 10e18);
         // give the token a pre-existing TST holding + approval so a reentrant sell() would really pay out if the
         // guard failed
         stock_.arm(c);
-        c.buy(5_000e18, 0);
+        c.buy(10e18, 0);
 
         assertFalse(stock_.sellSucceeded(), "reentrant sell() must be rejected");
         assertFalse(stock_.graduateSucceeded(), "reentrant graduate() must be rejected");

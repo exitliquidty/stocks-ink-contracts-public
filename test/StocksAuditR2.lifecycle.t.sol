@@ -210,7 +210,11 @@ contract StocksAuditR2LifecycleTest is StocksRedemptionAdversarialTest {
         assertEq(curve.MAX_SNIPE_BUY_BPS(), 500, "5% per-address cap in the window");
         assertEq(curve.CURVE_SUPPLY(), 800_000_000e18, "80% of the supply is sold on the curve");
         assertEq(curve.VIRTUAL_RESERVE_DIVISOR(), 3);
-        assertEq(curve.SOLDOUT_THRESHOLD_BPS(), 9_900);
+        // AuditAgent finding #8 (2026-09-30): lowered from 9,900 to 9,700 -- at 99%, `remaining`
+        // (8,000,000e18 TST) was already below the graduator's 10,000,000e18 TST minimum seed, so the
+        // sold-out path was mathematically guaranteed to revert SeedTooSmall at its own trigger point.
+        // See test/AuditAgentVerify.soldoutSeedConflict.t.sol.
+        assertEq(curve.SOLDOUT_THRESHOLD_BPS(), 9_700);
         assertEq(curve.PRICE_MAX_AGE(), 5 minutes);
     }
 

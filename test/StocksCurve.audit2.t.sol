@@ -140,12 +140,17 @@ contract StocksCurveAudit2Test is Test {
     /// several different traders, then confirm any one seller (even one who never bought) can be
     /// paid out, and the LAST possible seller (draining tokensSold to zero) also succeeds cleanly.
     function test_SequentialSellDownToZero_NeverReverts() public {
+        // AuditAgent finding #8's fix: buy() now caps how far a trade can push `remaining` toward
+        // StocksGraduator's own minimum seed floor. Scaled down from the original 1M/5M/500K (same
+        // 1:5:0.5 ratio across three distinctly-sized buyers, which is all this test's own assertions
+        // depend on -- not the exact absolute amounts) since those original values would consume nearly
+        // the entire curve against this fixture's own small virtual reserve.
         vm.prank(traders[0]);
-        curve.buy(1_000_000e18, 0);
+        curve.buy(10e18, 0);
         vm.prank(traders[1]);
-        curve.buy(5_000_000e18, 0);
+        curve.buy(50e18, 0);
         vm.prank(traders[2]);
-        curve.buy(500_000e18, 0);
+        curve.buy(5e18, 0);
 
         // traders[1] sells everything back first (out of order vs. buy sequence).
         uint256 bal1 = tst.balanceOf(traders[1]);

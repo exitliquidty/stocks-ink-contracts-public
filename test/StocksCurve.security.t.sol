@@ -383,7 +383,13 @@ contract StocksCurveSecurityTest is Test {
         (StocksCurve curve, TSTToken tstToken, MockStockToken stockToken) = _deployCurveAndTst(365e18, "U");
         vm.warp(block.timestamp + curve.SNIPE_WINDOW() + 1);
 
-        uint256 stockIn = 5_000e18;
+        // AuditAgent finding #8's fix: buy() now caps how far a single trade can push `remaining`
+        // toward StocksGraduator's own minimum seed floor, since a sufficiently large buy against this
+        // fixture's own small virtual reserve would otherwise consume nearly the entire curve. Lowered
+        // from the file's earlier shared 5_000e18 convenience value to one that still exercises a real,
+        // meaningful buy (this test doesn't depend on the exact resulting tokensSold) without tripping
+        // that guard.
+        uint256 stockIn = 10e18;
         stockToken.mint(address(this), stockIn);
         stockToken.approve(address(curve), stockIn);
         curve.buy(stockIn, 0);
@@ -414,7 +420,9 @@ contract StocksCurveSecurityTest is Test {
         (StocksCurve curve,, MockStockToken stockToken) = _deployCurveAndTst(365e18, "V");
         vm.warp(block.timestamp + curve.SNIPE_WINDOW() + 1);
 
-        uint256 stockIn = 5_000e18;
+        // See the sibling skim test above for why this is lowered from the file's earlier shared
+        // 5_000e18 convenience value (AuditAgent finding #8's fix).
+        uint256 stockIn = 10e18;
         stockToken.mint(address(this), stockIn);
         stockToken.approve(address(curve), stockIn);
         curve.buy(stockIn, 0);
@@ -446,7 +454,9 @@ contract StocksCurveSecurityTest is Test {
         tstToken.transfer(address(curve), SUPPLY);
         vm.warp(block.timestamp + curve.SNIPE_WINDOW() + 1);
 
-        uint256 stockIn = 5_000e18;
+        // See test_Skim_BurnsStrayTst_NeverTouchesCommittedTstSupply above for why this is lowered
+        // from the file's earlier shared 5_000e18 convenience value (AuditAgent finding #8's fix).
+        uint256 stockIn = 10e18;
         stock.mint(address(this), stockIn);
         stock.approve(address(curve), stockIn);
         stock.arm(curve, stockIn);
