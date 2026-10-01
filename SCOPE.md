@@ -80,6 +80,12 @@ Priced separately, at your discretion:
 ## Notes for auditors
 
 - **Architecture:** `BUSINESS-LOGIC.md` in this repository describes the system end to end. Start there.
-- **Prior review:** this code has been through an extensive internal AI-assisted review. A detailed findings log, including issues we have consciously accepted and the reasoning for each, is available under NDA and will save you rediscovering them. Please ask.
-- **Known accepted trade-offs**, so they are not surprises: a trusted off-chain signer provides the price attestation used at launch; that attestation is a bearer credential not bound to a sender; graduation seeds the stock side from the curve's live balance, so a donation shifts the pool's opening price; and staked TST plus pool-locked liquidity carry no voting power while still counting toward governance quorum.
+- **Prior review is published in full** under [`audits/`](./audits/), so you can see what has already been covered instead of rediscovering it:
+  - [`INTERNAL-AUDIT.md`](./audits/INTERNAL-AUDIT.md) — 23 rounds of internal review, including mutation testing, a formal proof of the curve solvency invariant, symbolic execution, invariant campaigns up to 1,000,000 calls, and live-fork testing against the real Ink PoolManager and all 723 xStock wrappers.
+  - [`AUDIT_INDEPENDENT_VERIFICATION.md`](./audits/AUDIT_INDEPENDENT_VERIFICATION.md) — an independent pass that re-derived the reward accounting from first principles. No new vulnerability in `src/`.
+  - [`NETHERMIND-AUDITAGENT-SCAN.md`](./audits/NETHERMIND-AUDITAGENT-SCAN.md) — external automated scan by Nethermind's AuditAgent. 22 findings, all independently verified; 4 were real and are fixed.
+
+  None of this is a third-party human audit, which is what we are asking you for.
+
+- **Known accepted trade-offs**, so they are not surprises: a trusted off-chain signer provides the price attestation used at launch; that attestation is a bearer credential not bound to a sender; graduation seeds the stock side from the curve's live balance, so a donation shifts the pool's opening price; and staked TST plus pool-locked liquidity carry no voting power while still counting toward governance quorum. Each is documented with its reasoning in `audits/INTERNAL-AUDIT.md`.
 - **Chain:** Ink (chain ID 57073). Solidity 0.8.26 pinned, `via_ir` enabled, Cancun EVM.

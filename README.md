@@ -10,6 +10,10 @@ Stocks.ink lets anyone launch a tokenized version of a real-world stock ("TST", 
 
 Please quote against `SCOPE.md`.
 
+## Prior security work
+
+Published in full under [`audits/`](./audits/) — 23 rounds of internal review, an independent verification pass, and an external automated scan by Nethermind's AuditAgent (22 findings, all verified, 4 real and fixed). It is internal and automated review, **not** a third-party human audit, which is still pending. It is public so reviewers can see what is already covered and so the design trade-offs we have deliberately accepted are stated up front rather than reported as findings.
+
 ## Start here
 
 Read [`BUSINESS-LOGIC.md`](./BUSINESS-LOGIC.md) first: a full business-logic specification, contract by contract, written against the code with no inline comments. It describes what every function is supposed to do and why, the invariants that should hold across contracts, and a list of design choices that are intentional, not bugs — so you can diff the actual code against a stated rule instead of guessing intent from scratch.
