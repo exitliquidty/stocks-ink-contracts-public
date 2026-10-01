@@ -211,22 +211,30 @@ contract StocksCurve is ReentrancyGuard {
         // trigger point, and continued buying past EITHER eligibility path could strand an otherwise-fine
         // curve the same way.
         //
-        // Guarded here by capping how far `remaining` can shrink, NOT by recomputing the full seed
-        // formula -- a first version of this fix DID recompute `_graduate()`'s own tstToSeed formula
-        // after every trade and was a genuine, real bug, caught before shipping: tstToSeed is
+        // A first version of this fix recomputed `_graduate()`'s own tstToSeed formula after EVERY trade
+        // and was a genuine bug, caught before shipping: tstToSeed is
         // (realStockCollected * remaining) / oldVirtualStock, which is naturally SMALL for a curve that
-        // has only just started (small realStockCollected), so checking its CURRENT value against the
-        // minimum incorrectly rejected completely ordinary early buying, long before the curve was even
-        // close to its own graduation target -- confirmed directly by the existing suite's own
-        // pre-existing tests immediately failing SeedWouldBeUnreachable() on perfectly ordinary trades.
-        // tstToSeed is always strictly LESS than `remaining` (proven algebraically elsewhere in this
-        // suite), so ensuring `remaining` alone never drops below the minimum is both NECESSARY (nothing
-        // above it could ever be seedable) and SUFFICIENT to prevent permanent bricking (not necessarily
-        // sufficient for graduate() to succeed on ANY given call -- realStockCollected still needs to
-        // catch up first if a curve JUST reached eligibility with little real stock collected -- but
-        // exactly like the existing, already-accepted `_graduate()` design for the sell()-side recovery
-        // path, more buying can always increase realStockCollected further without remaining ever
-        // shrinking again, so the curve can never become PERMANENTLY unseedable this way).
+        // has only just started (small realStockCollected), so checking its current value against the
+        // minimum unconditionally also rejected completely ordinary EARLY buying, long before the curve
+        // was anywhere near its graduation target.
+        //
+        // Round 22 (2026-10-01, self-audit of this very guard) then found the opposite error in its
+        // replacement: capping `remaining` ALONE is necessary but NOT sufficient. The graduator checks
+        // the seed it actually receives, which is tstToSeed, and tstToSeed is always strictly LESS than
+        // `remaining` -- so buying right down to `remaining == minSeed` left tstToSeed at 9,875,000e18
+        // against the graduator's required 10,000,000e18, and graduate() reverted SeedTooSmall at a point
+        // this guard had explicitly allowed. (That state was recoverable -- selling raises `remaining`,
+        // which on this side of the curve raises tstToSeed with it -- but an earlier version of this
+        // comment claimed the cure was MORE BUYING, which is wrong twice over: buying shrinks `remaining`
+        // rather than leaving it alone, and at the boundary buying is blocked outright.)
+        //
+        // Both errors are avoided by checking the real seed formula but only on the LATE side of the
+        // curve. tstToSeed as a function of `remaining` is a downward parabola peaking at
+        // remaining = CURVE_SUPPLY/2, so it falls below minSeed in two places: near CURVE_SUPPLY (early,
+        // where the cure genuinely is more buying) and near zero (late, where more buying is exactly the
+        // danger). Restricting the seed check to remaining < CURVE_SUPPLY/2 catches the late case without
+        // touching the early one, and makes the guarantee a clean one: any buy this guard permits leaves
+        // a curve that can actually graduate.
         {
             uint256 projectedTokensSold = tokensSold + tstOut;
             uint256 projectedRemaining = CURVE_SUPPLY - projectedTokensSold;
@@ -236,6 +244,13 @@ contract StocksCurve is ReentrancyGuard {
             // (test/AuditAgentVerify.soldoutSeedConflict.t.sol) that fails loudly if either side drifts.
             uint256 minSeed = (TOTAL_SUPPLY * 100) / BPS_DENOM;
             if (projectedRemaining < minSeed) revert SeedWouldBeUnreachable();
+
+            if (projectedRemaining < CURVE_SUPPLY / 2) {
+                uint256 projectedCollected = realStockCollected + actualStockIn;
+                uint256 projectedSeed =
+                    (projectedCollected * projectedRemaining) / (virtualStockReserve + projectedCollected);
+                if (projectedSeed < minSeed) revert SeedWouldBeUnreachable();
+            }
         }
 
         if (block.timestamp < launchTimestamp + SNIPE_WINDOW) {
