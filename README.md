@@ -4,6 +4,12 @@ This is a contracts-only export of [Stocks.ink](https://stocks.ink)'s current co
 
 Stocks.ink lets anyone launch a tokenized version of a real-world stock ("TST", Tokenized Stock Treasury), bond it against a signed real-time price attestation, and trade it through a bonding curve that graduates into a live Uniswap V4 pool with on-chain staking and governance over the resulting treasury.
 
+## Audit scope
+
+**[`SCOPE.md`](./SCOPE.md) defines exactly what we are asking to be audited**, so that proposals from different firms are directly comparable. In short: the **12 first-party contracts, 1,531 nSLOC**. The vendored TWAMM under `src/dex/v4/twamm/vendor/` (891 nSLOC, 37% of the tree) is third-party code already audited by ABDK Consulting and Certora in January 2025, and is **out of scope** — it stays in the repository only because the project will not compile without it. The protocol's own overrides on top of it, in `StocksHook`, are in scope.
+
+Please quote against `SCOPE.md`.
+
 ## Start here
 
 Read [`BUSINESS-LOGIC.md`](./BUSINESS-LOGIC.md) first: a full business-logic specification, contract by contract, written against the code with no inline comments. It describes what every function is supposed to do and why, the invariants that should hold across contracts, and a list of design choices that are intentional, not bugs — so you can diff the actual code against a stated rule instead of guessing intent from scratch.
