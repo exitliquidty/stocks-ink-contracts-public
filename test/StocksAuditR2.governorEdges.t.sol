@@ -49,10 +49,15 @@ contract StocksAuditR2GovernorEdgesTest is Test {
         id = gov.propose(targets, values, calldatas, description);
     }
 
-    /// @notice Two proposals created in the same second share one snapshot timepoint. The burn balance recorded for that
-    /// timepoint must be the one seen by the FIRST proposal: a later proposal in the same second must not overwrite it, or
-    /// someone could burn tokens between the two proposals and shift the first proposal's quorum after it was created.
-    function test_TheBurnSnapshot_OfASharedTimepoint_IsNotOverwrittenByALaterProposal() public {
+    /// @notice Two proposals created in the same second share one snapshot timepoint. The burn balance for that timepoint
+    /// is recorded exactly once, by the first vote, and nothing afterwards can move it -- a bar that drifted once voting
+    /// had begun would be unfixable, since quorum itself is immutable.
+    ///
+    /// The value is read at the snapshot rather than at proposal creation. Those are a whole votingDelay apart and TST
+    /// burns continuously in between, so a burn landing before the snapshot genuinely belongs in the subtraction:
+    /// crediting circulating supply with tokens that are already gone would put quorum above its true value and fail
+    /// proposals that should pass.
+    function test_TheBurnSnapshot_OfASharedTimepoint_IsRecordedOnceAndNeverMovesAfterwards() public {
         vm.warp(block.timestamp + 1);
         uint256 a = _propose("first");
         uint256 snapshot = gov.proposalSnapshot(a);
@@ -64,8 +69,23 @@ contract StocksAuditR2GovernorEdgesTest is Test {
         assertEq(gov.proposalSnapshot(b), snapshot, "both proposals share the snapshot timepoint");
 
         vm.warp(snapshot + 1);
-        // the quorum for that timepoint is what the first proposal saw: nothing burned yet
-        assertEq(gov.quorum(snapshot), (SUPPLY * 10) / 100, "the first proposal's quorum ignores the later burn");
+        // The burn landed before the snapshot, so it counts against circulating supply.
+        uint256 expected = ((SUPPLY - SUPPLY / 2) * 10) / 100;
+        assertEq(gov.quorum(snapshot), expected, "a burn before the snapshot is counted against circulating supply");
+
+        // The first vote fixes the figure for this timepoint...
+        vm.prank(alice);
+        gov.castVote(a, 1);
+        assertEq(gov.quorum(snapshot), expected, "voting records the value it was already reading");
+
+        // ...and a later burn cannot move it, for either proposal sharing that timepoint.
+        vm.prank(alice);
+        token.transfer(BURN, SUPPLY / 4);
+        assertEq(gov.quorum(snapshot), expected, "a burn after the snapshot was recorded must not move quorum");
+
+        vm.prank(alice);
+        gov.castVote(b, 1);
+        assertEq(gov.quorum(snapshot), expected, "a second proposal cannot overwrite the recorded snapshot");
     }
 
     /// @notice A burn that lands BEFORE any proposal of that second is counted, as intended.

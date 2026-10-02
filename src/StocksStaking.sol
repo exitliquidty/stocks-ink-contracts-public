@@ -493,9 +493,17 @@ contract StocksStaking is ReentrancyGuard {
             uint256 remaining = periodFinish - block.timestamp;
             uint256 leftover = remaining * rewardRate;
             if (reward * MATERIAL_INFLOW_DIVISOR >= leftover) {
-
-                rewardRate = (reward + leftover) / rewardsDuration;
-                periodFinish = block.timestamp + rewardsDuration;
+                // A restart must never SHORTEN the vesting of the existing leftover. Spreading it over a
+                // longer window is exactly what makes the restart rule a defence against late staking: a
+                // latecomer cannot capture what is already in the pot without staying for it. If governance
+                // lowers `rewardsDuration` below the time left on the current period, restarting over the
+                // raw new duration would compress that leftover instead, and since the restart trigger is
+                // permissionless anyone could stake, force it, and collect the compressed stream. Taking
+                // the longer of the two keeps the new duration in force for future periods while leaving
+                // the current leftover on at least its original schedule.
+                uint256 restartDuration = rewardsDuration > remaining ? rewardsDuration : remaining;
+                rewardRate = (reward + leftover) / restartDuration;
+                periodFinish = block.timestamp + restartDuration;
             } else {
 
                 rewardRate += reward / remaining;

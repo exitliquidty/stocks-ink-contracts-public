@@ -97,18 +97,29 @@ contract StocksGovernor is
         return (circulatingSupply * quorumNumerator(timepoint)) / quorumDenominator();
     }
 
-    function _propose(
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas,
-        string memory description,
-        address proposer
-    ) internal override returns (uint256 proposalId) {
-        proposalId = super._propose(targets, values, calldatas, description, proposer);
+    /// @dev The burn figure `quorum()` uses must describe the vote snapshot, not proposal creation. Those
+    /// are a whole `votingDelay` apart, and TST burns continuously in between through buy costs, liquidation
+    /// claims and redemptions. Recording it at creation therefore credits the circulating supply with tokens
+    /// that are already gone by the snapshot, setting quorum above its true value and making proposals fail
+    /// that should pass -- which matters here because quorum is immutable and already carries a large block
+    /// of permanently non-voting supply.
+    ///
+    /// It cannot simply be read inside `quorum()`, which is `view`. Recording it on the first vote instead
+    /// pins it at or after the snapshot, since voting is only possible once the proposal is Active. Any
+    /// error now falls on the side of a slightly LOWER quorum rather than a higher one, which is the safe
+    /// direction for a threshold that can never be adjusted.
+    function _castVote(
+        uint256 proposalId,
+        address account,
+        uint8 support,
+        string memory reason,
+        bytes memory params
+    ) internal override returns (uint256) {
         uint256 timepoint = proposalSnapshot(proposalId);
         if (!_burnSnapshotRecorded[timepoint]) {
             _burnSnapshotRecorded[timepoint] = true;
             _burnedAtSnapshot[timepoint] = IERC20(address(token())).balanceOf(BURN_ADDRESS);
         }
+        return super._castVote(proposalId, account, support, reason, params);
     }
 }
