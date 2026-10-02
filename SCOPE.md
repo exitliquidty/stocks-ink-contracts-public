@@ -51,7 +51,7 @@ Third-party code. It must stay in the repository because `StocksHook` extends `T
 ## Also excluded
 
 - `lib/` — forge-std, OpenZeppelin, Uniswap v4-core. Dependencies, not vendored, and not included in any count above.
-- `test/` — roughly 20,000 lines. Not for review, but useful context: the suite runs 648 tests including invariant campaigns, fuzzing and mutation testing, so ramp-up should be fast.
+- `test/` — roughly 20,000 lines. Not for review, but useful context: the suite runs 670 tests including invariant campaigns, fuzzing and mutation testing, so ramp-up should be fast.
 
 ---
 
