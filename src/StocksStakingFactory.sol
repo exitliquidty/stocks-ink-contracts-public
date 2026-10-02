@@ -17,7 +17,18 @@ pragma solidity ^0.8.24;
 
 import {StocksStaking} from "./StocksStaking.sol";
 
+/// @title StocksStakingFactory
+/// @notice Deploys staking contracts. It exists only to keep the staking creation code out of the curve.
+/// @dev Stateless and permissionless. The caller becomes the new contract's `curve`, the only address allowed
+/// to set its pool, so a staking contract deployed by a stranger has no connection to any real launch.
 contract StocksStakingFactory {
+    /// @notice Deploys a staking contract whose `curve` is the caller.
+    /// @param tstToken The token that is staked.
+    /// @param stockToken The token rewards are paid in and the treasury holds.
+    /// @param rewardsDuration Initial reward period, in seconds.
+    /// @param governor The only address allowed to call the governed functions.
+    /// @param hook The v4 hook, used for treasury liquidation orders.
+    /// @return staking The new staking contract.
     function deploy(
         address tstToken,
         address stockToken,

@@ -506,6 +506,8 @@ Measured directly over the 180-day simulation: with only **7.08%** of circulatin
 
 ## Round 20 (2026-09-30, continuing "keep testing the business logic to find vulnerabilities" -- a real, severe finding)
 
+*(Corrected in round 27: this is a coordination problem, not an unrecoverable deadlock. Staking has no lock, so a staker can unstake and delegate before a proposal's snapshot and restake after it.)*
+
 Following directly from round 19's own finding (the flywheel gives every holder a strong, rational incentive to stake, since stakers capture roughly 11.8x their proportional share of value): what happens to *governance* as that rational incentive plays out and staking participation grows?
 
 **Two already-separately-documented facts, never previously combined and tested together:**
@@ -574,6 +576,8 @@ The curve is a constant product, so `(virtualStockReserve + realStockCollected) 
 Consequence for the record: round 21 lowered `SOLDOUT_THRESHOLD_BPS` 9,900 -> 9,700 as part of AuditAgent finding #8, framed as resolving a conflict between that threshold and the seed floor. On this analysis that change was harmless but **cosmetic** -- the branch it tunes cannot independently fire. The real defect finding #8 closed was the missing buy()-side cap, which applies to every graduation path. Noted so the repo's own account of that fix stays accurate rather than overstated.
 
 **3. (Medium, NEW -- escalates round 20.) Permanently locked pool liquidity is non-voting but counts in quorum's denominator.**
+
+*(Corrected in round 27: this is a coordination problem, not an unrecoverable deadlock. Staking has no lock, so a staker can unstake and delegate before a proposal's snapshot and restake after it.)*
 
 Round 20 established that staked TST has zero voting power while still sitting in `quorum()`'s denominator, and put the resulting deadlock threshold at roughly 89% of circulating supply staked. That measurement missed a second and larger block of permanently non-voting supply that exists from the moment a pool opens: the graduation seed itself. `quorum()` divides `getPastTotalSupply(timepoint) - burned`, i.e. everything except the burn address. At graduation `tstToSeed` is transferred into the Uniswap v4 PoolManager, a singleton that never calls `delegate()` -- and unlike staked TST, which a holder can unstake at any time to recover its vote, this liquidity is locked permanently by design (it is the platform's core "liquidity locked forever" promise; `StocksGraduator` exposes no withdrawal path). It is therefore unconditionally and irreversibly non-voting, yet it sits in the quorum denominator for the life of the protocol.
 
@@ -720,6 +724,20 @@ Round 23 found that `StocksStaking.redeem()` burned the TST before paying out th
 **Status of round 23's finding 1:** fixed here. Finding 2 (no deadline on buy/sell/redeem) remains informational and unchanged.
 
 **Verification:** full suite after the change, every file including both solvency invariant campaigns, the system invariant campaign and the real-Ink fork tests: **114 suites / 672 tests / 0 failed** (round 24: 112 / 648; round 25 added 2 suites and 22 tests; this round adds 2 tests). The deployed TEST generation does not contain this change, or any since round 2: it reaches users at the next redeploy.
+
+## Round 27 (2026-10-02, preparation for the external audit: documentation, warnings, and one correction to this record)
+
+No behaviour changed this round. It brings the repository in line with the external auditor's intake requirements and corrects one overstatement in this document.
+
+**1. NatSpec on everything, verified not to have touched the code.** Every function (96 of 96), event, error and state variable in the 12 first-party contracts now carries NatSpec, with line-level comments in the bodies of the hook, staking contract and graduator. Comment lines to code lines across the first-party contracts went from 23% to 87%. The comments were inserted by a script that strips comments from each file before and after and refuses to write the file if the remaining code differs by a single character, so the change is comments only by construction, not by review. The vendored TWAMM was left exactly as upstream wrote it. `BUSINESS-LOGIC.md`, which had been written as the substitute for an uncommented `src/`, was brought up to date with rounds 24 and 26 (it still described the burn snapshot as taken at proposal creation, the restart as running over the raw `rewardsDuration`, and gave no transfer order for `redeem`).
+
+**2. Three compiler warnings removed (`StocksHook.sol`).** Two unused parameter names were dropped (`beforeInitialize`'s `sqrtPriceX96`, `_emitSwapEvent`'s `params`) and the deliberately ignored result of the treasury ping in `_routeStockFee` is now captured into a named local. That last one is the only change this round that is not a comment or a name; the call, its arguments and what happens on failure are the same. `forge build` now reports no warning in `src/`. Deployed size of `StocksHook` after the change: **24,227 bytes** against the 24,576-byte limit.
+
+**3. Correction: the "quorum deadlock" of rounds 20 and 22 is a coordination problem, not an unrecoverable state.** Those rounds measured correctly that staked TST and pool-held TST carry no votes while still counting in `quorum()`'s denominator, and that the 10% quorum numerator can never be changed. They then described the result as a deadlock with no recovery path. That conclusion does not follow and is withdrawn. `unstake()` has no lock, delay or penalty; votes are read at the proposal's snapshot, which is a full voting delay after the proposal is created (at least an hour, a day on the mainnet profile); so any staker who wants a proposal to pass can unstake, delegate, and restake immediately after the snapshot, forgoing only the rewards of that short gap. Pool-held TST is likewise not frozen: whoever buys it can vote with it. What remains true, and is listed in the README's known issues, is that heavy staking makes reaching quorum depend on stakers noticing a proposal and acting before its snapshot, and that the quorum figure itself is immutable. No source change was or is needed.
+
+**4. Test coverage.** Line coverage has not been measured at this commit. `forge coverage` compiles the whole tree without the optimizer, and with `via_ir` that has exhausted memory on the development machine every time it has been tried (rounds 2 and 3). It is being run separately and its result will be reported to the auditors alongside this commit rather than held back for. What stands in for it in the meantime is stronger evidence of the same thing: mutation testing over the first-party contracts (116 single-line mutants in round 2, 106 killed and the 10 survivors each shown equivalent or documented; 36 more over the vendored TWAMM in rounds 3 and 6), which measures whether the tests can fail rather than merely whether lines execute.
+
+**Verification:** full suite after the changes, every file: **114 suites, 672 tests, 0 failed**. A direct `solc` analysis pass over all first-party sources reports no error and no warning in `src/`.
 
 ## Pre-launch checks
 

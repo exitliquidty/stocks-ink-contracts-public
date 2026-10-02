@@ -24,6 +24,17 @@ import {GovernorVotesQuorumFraction} from
 import {IVotes} from "@openzeppelin/contracts/governance/utils/IVotes.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+/// @title StocksGovernor
+/// @notice The governor deployed for each TST at graduation. TST holders vote, and the governor is the only
+/// address that may call the three governed functions on that token's staking contract: pause or resume
+/// rewards, change the reward period, and liquidate the treasury into a buy-and-burn.
+/// @dev OpenZeppelin Governor with simple For/Against/Abstain counting and no timelock. Three things differ
+/// from the stock contract. (1) Voting delay, voting period and quorum are fixed at deployment and can never
+/// be changed, not even by a proposal. (2) Quorum and the proposal threshold are measured against CIRCULATING
+/// supply, total supply minus what sits at the burn address, because TST is burned by transfer and total
+/// supply never falls. (3) The burned amount used for a proposal's quorum is pinned by its first vote, so the
+/// bar cannot move once voting has begun. Staked TST and TST held in the pool carry no votes while they sit
+/// there; a staker who wants to vote must unstake and delegate before the proposal's snapshot.
 contract StocksGovernor is
     Governor,
     GovernorSettings,
@@ -31,23 +42,50 @@ contract StocksGovernor is
     GovernorVotes,
     GovernorVotesQuorumFraction
 {
+    /// @notice Shortest voting delay accepted at deployment.
     uint48 public constant MIN_VOTING_DELAY = 1 hours;
+    /// @notice Shortest voting period accepted at deployment.
     uint32 public constant MIN_VOTING_PERIOD = 1 hours;
+    /// @notice Smallest quorum percentage accepted at deployment.
     uint256 public constant MIN_QUORUM_NUMERATOR = 1;
+    /// @dev Basis-point denominator.
     uint256 private constant BPS_DENOM = 10_000;
 
+    /// @notice Share of circulating supply, in basis points, an account must hold in votes to create a proposal.
     uint256 public immutable proposalThresholdBps;
+    /// @notice The address TST is burned to. Its balance is excluded from circulating supply.
     address public constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
 
+    /// @dev Burn-address balance recorded for a snapshot timepoint by the first vote cast at that timepoint.
     mapping(uint256 timepoint => uint256 burned) private _burnedAtSnapshot;
+    /// @dev Whether a value has been recorded for a timepoint. Needed because the recorded value may be zero.
     mapping(uint256 timepoint => bool recorded) private _burnSnapshotRecorded;
 
+    /// @notice The voting delay is below the minimum.
+    /// @param votingDelay The value supplied.
+    /// @param minVotingDelay The minimum allowed.
     error VotingDelayTooShort(uint48 votingDelay, uint48 minVotingDelay);
+    /// @notice The voting period is below the minimum.
+    /// @param votingPeriod The value supplied.
+    /// @param minVotingPeriod The minimum allowed.
     error VotingPeriodTooShort(uint32 votingPeriod, uint32 minVotingPeriod);
+    /// @notice The quorum percentage is below the minimum.
+    /// @param quorumNumerator The value supplied.
+    /// @param minQuorumNumerator The minimum allowed.
     error QuorumNumeratorTooLow(uint256 quorumNumerator, uint256 minQuorumNumerator);
+    /// @notice Voting delay, voting period and quorum cannot be changed after deployment.
     error VotingSettingsAreImmutable();
+    /// @notice The proposal threshold exceeds 100%.
+    /// @param proposalThresholdBps The value supplied.
     error ProposalThresholdBpsTooHigh(uint256 proposalThresholdBps);
 
+    /// @notice Fixes the governor's settings for good.
+    /// @param name_ Governor name; also its EIP-712 domain name, so at most 31 bytes.
+    /// @param token_ The vote token (the TST).
+    /// @param votingDelay_ Seconds between proposal creation and the vote snapshot.
+    /// @param votingPeriod_ Seconds the vote stays open.
+    /// @param proposalThresholdBps_ Proposal threshold in basis points of circulating supply.
+    /// @param quorumNumerator_ Quorum as a percentage of circulating supply.
     constructor(
         string memory name_,
         IVotes token_,
@@ -70,24 +108,34 @@ contract StocksGovernor is
         proposalThresholdBps = proposalThresholdBps_;
     }
 
+    /// @notice Always reverts: the voting delay is immutable.
     function setVotingDelay(uint48) public pure override {
         revert VotingSettingsAreImmutable();
     }
 
+    /// @notice Always reverts: the voting period is immutable.
     function setVotingPeriod(uint32) public pure override {
         revert VotingSettingsAreImmutable();
     }
 
+    /// @notice Always reverts: the quorum percentage is immutable.
     function updateQuorumNumerator(uint256) public pure override {
         revert VotingSettingsAreImmutable();
     }
 
+    /// @notice Votes needed to create a proposal: `proposalThresholdBps` of the current circulating supply.
+    /// @return The threshold, in votes.
     function proposalThreshold() public view override(Governor, GovernorSettings) returns (uint256) {
         IERC20 votesToken = IERC20(address(token()));
         uint256 circulatingSupply = votesToken.totalSupply() - votesToken.balanceOf(BURN_ADDRESS);
         return (circulatingSupply * proposalThresholdBps) / BPS_DENOM;
     }
 
+    /// @notice Votes (For plus Abstain) a proposal with this snapshot needs in order to pass.
+    /// @dev The quorum percentage of supply at the snapshot minus burned TST. The burned figure is the one
+    /// recorded by the first vote at this timepoint; until a vote is cast it is read live.
+    /// @param timepoint The proposal's snapshot timestamp.
+    /// @return The quorum, in votes.
     function quorum(uint256 timepoint) public view override(Governor, GovernorVotesQuorumFraction) returns (uint256) {
 
         uint256 burned = _burnSnapshotRecorded[timepoint]

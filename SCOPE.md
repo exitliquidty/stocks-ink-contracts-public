@@ -6,14 +6,14 @@ Measurements below are **nSLOC** (source lines excluding blank lines and comment
 
 ---
 
-## In scope — 1,531 nSLOC, 12 contracts
+## In scope — 1,533 nSLOC, 12 contracts
 
 All first-party code. Every file below is ours, written for this protocol, and carries `SPDX-License-Identifier: UNLICENSED`.
 
 | Contract | nSLOC | Holds funds | Notes |
 |---|---:|:---:|---|
-| `src/dex/v4/StocksHook.sol` | 421 | yes | Uniswap v4 hook. Holds per-pool reserves, splits the protocol cost across `beforeSwap`/`afterSwap`, charges TWAMM order flow, and fails open on TWAMM errors under a gas guard. Our overrides of the vendored TWAMM live here. Currently ~585 bytes under the EIP-170 limit. |
-| `src/StocksStaking.sol` | 405 | yes | Holds the entire stock treasury. Reward streaming, in-kind redemption, and governance-triggered treasury liquidation via a TWAMM order. |
+| `src/dex/v4/StocksHook.sol` | 422 | yes | Uniswap v4 hook. Holds per-pool reserves, splits the protocol cost across `beforeSwap`/`afterSwap`, charges TWAMM order flow, and fails open on TWAMM errors under a gas guard. Our overrides of the vendored TWAMM live here. Currently ~585 bytes under the EIP-170 limit. |
+| `src/StocksStaking.sol` | 406 | yes | Holds the entire stock treasury. Reward streaming, in-kind redemption, and governance-triggered treasury liquidation via a TWAMM order. |
 | `src/curve/StocksCurve.sol` | 222 | yes | Bonding curve. Holds user stock and the full TST supply until graduation. Constant-product quoting, anti-snipe window, graduation trigger. |
 | `src/dex/v4/StocksGraduator.sol` | 132 | yes | One-shot per launch. Seeds the v4 pool, delivers hook reserves, and mints the single full-range position that is locked permanently. Failures here are not recoverable. |
 | `src/StocksLaunchFactory.sol` | 121 | transient | Validates a signed price attestation, deploys the TST token and curve, registers metadata. |
@@ -25,7 +25,7 @@ All first-party code. Every file below is ours, written for this protocol, and c
 | `src/TokenMetadataRegistry.sol` | 15 | no | Permissionless write-once metadata registry. |
 | `src/StocksStakingFactory.sol` | 15 | no | Spawner. |
 
-**Where the risk concentrates:** `StocksHook`, `StocksStaking`, `StocksCurve` and `StocksGraduator` together are 1,180 nSLOC and account for effectively all funds at risk. If scope has to be cut, cut from the bottom of the table, not the top.
+**Where the risk concentrates:** `StocksHook`, `StocksStaking`, `StocksCurve` and `StocksGraduator` together are 1,182 nSLOC and account for effectively all funds at risk. If scope has to be cut, cut from the bottom of the table, not the top.
 
 ---
 
@@ -70,10 +70,10 @@ Priced separately, at your discretion:
 
 | | nSLOC |
 |---|---:|
-| In scope | **1,531** |
+| In scope | **1,533** |
 | Optional scripts | 188 |
 | Out of scope (vendored) | 891 |
-| Whole `src/` tree | 2,422 |
+| Whole `src/` tree | 2,424 |
 
 ---
 
@@ -81,11 +81,11 @@ Priced separately, at your discretion:
 
 - **Architecture:** `BUSINESS-LOGIC.md` in this repository describes the system end to end. Start there.
 - **Prior review is published in full** under [`audits/`](./audits/), so you can see what has already been covered instead of rediscovering it:
-  - [`INTERNAL-AUDIT.md`](./audits/INTERNAL-AUDIT.md) — 23 rounds of internal review, including mutation testing, a formal proof of the curve solvency invariant, symbolic execution, invariant campaigns up to 1,000,000 calls, and live-fork testing against the real Ink PoolManager and all 723 xStock wrappers.
+  - [`INTERNAL-AUDIT.md`](./audits/INTERNAL-AUDIT.md) — 27 rounds of internal review, including mutation testing, a formal proof of the curve solvency invariant, symbolic execution, invariant campaigns up to 1,000,000 calls, and live-fork testing against the real Ink PoolManager and all 723 xStock wrappers.
   - [`AUDIT_INDEPENDENT_VERIFICATION.md`](./audits/AUDIT_INDEPENDENT_VERIFICATION.md) — an independent pass that re-derived the reward accounting from first principles. No new vulnerability in `src/`.
   - [`NETHERMIND-AUDITAGENT-SCAN.md`](./audits/NETHERMIND-AUDITAGENT-SCAN.md) — external automated scan by Nethermind's AuditAgent. 22 findings, all independently verified; 4 were real and are fixed.
 
   None of this is a third-party human audit, which is what we are asking you for.
 
-- **Known accepted trade-offs**, so they are not surprises: a trusted off-chain signer provides the price attestation used at launch; that attestation is a bearer credential not bound to a sender; graduation seeds the stock side from the curve's live balance, so a donation shifts the pool's opening price; and staked TST plus pool-locked liquidity carry no voting power while still counting toward governance quorum. Each is documented with its reasoning in `audits/INTERNAL-AUDIT.md`.
+- **Known accepted trade-offs**, so they are not surprises: a trusted off-chain signer provides the price attestation used at launch; that attestation is a bearer credential not bound to a sender; graduation seeds the stock side from the curve's live balance, so a donation shifts the pool's opening price; and staked TST plus pool-locked liquidity carry no voting power while still counting toward governance quorum (a staker who wants to vote unstakes and delegates before the proposal's snapshot; there is no lock). The full list is under "Known issues and accepted trade-offs" in `README.md`. Each is documented with its reasoning in `audits/INTERNAL-AUDIT.md`.
 - **Chain:** Ink (chain ID 57073). Solidity 0.8.26 pinned, `via_ir` enabled, Cancun EVM.
