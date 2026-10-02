@@ -605,6 +605,8 @@ Two classes came back genuinely **uncovered**. Both are recorded in `test/Stocks
 
 **1. (Low, latent.) Read-only reentrancy on the REDEMPTION RATE -- the one shape round 10's read-only pass did not look at.**
 
+*(Fixed in round 26: `redeem()` now pays out before it burns, so the mid-call rate reads low instead of high. The description below is of the code as it was.)*
+
 Round 10 did check read-only reentrancy, but only against `StocksHook.getReserves()` and the price accumulator, and correctly concluded those are live Uniswap state with no on-chain consumer. It never examined `StocksStaking.quoteRedeem` / `redeemableStock`, which is the far more dangerous shape and precisely the one that made Curve's `get_virtual_price` the canonical $73M case: an independently COMPUTED ratio of two values the contract itself mutates, published through a view that no guard protects -- OpenZeppelin's `nonReentrant` does not cover view functions.
 
 `redeem()` moves the numerator and the denominator of that ratio in two SEPARATE external calls:
@@ -702,6 +704,22 @@ Tested with the fee at its maximum in both directions (`test/StocksAuditR25.prot
 - `sync`'s cost on proceeds is floored per call, so a sync that yields under 10-13 wei of proceeds pays none. Not exploitable at 18 decimals: each such sync costs far more gas than it saves.
 
 **Verification:** both new files pass (4 and 2 new tests; each file also re-runs the 8 inherited fixture tests, 22/22 in total). No source change this round, so round 24's full-suite result (112 suites / 648 tests / 0 failed) stands for everything else. Additionally an enlarged run of the system invariant campaign against the current source, round 24's two fixes included (temporary config bump, not committed): 1,000 runs x 500 depth = **500,000 calls, 0 reverts, all 11 invariants held**, with the `setDuration` handler that exercises round 24's restart rule called 27,577 times and `liquidate` 27,477 times.
+
+## Round 26 (2026-10-02, owner decision: fix round 23's read-only reentrancy window on the redemption rate)
+
+Round 23 found that `StocksStaking.redeem()` burned the TST before paying out the stock, so that between its transfers `quoteRedeem` / `redeemableStock` published a rate higher than any rate ever settled, and left it documented rather than fixed because the mitigation was the owner's call. The owner has now made it: fixed.
+
+**The change (three lines reordered in `StocksStaking.redeem()`):** the redeemer's stock and the protocol's cut are transferred first, and the TST burn is last. The two sides of the published ratio still move one transfer at a time, and the views are still not covered by `nonReentrant`, so an intermediate state is still observable by a stock token with a transfer callback. What changed is its direction: the numerator now leads the denominator, so every intermediate state reads at or BELOW the rate from before the redemption, which is itself at or below the settled rate. A consumer that trusts the quote mid-call is now conservative rather than overpaying. Nothing is paid for free by the reordering: the burn is in the same transaction and reverts all three transfers if it fails.
+
+**Tests (`test/StocksAuditR23.solodit.t.sol`, rewritten from proving the defect to pinning the fix; 6 tests, was 4):** the observer now records the highest and lowest rate across EVERY callback rather than one of them. With the callback before balances move, the highest rate seen during a 10%-of-supply redemption equals the pre-redemption rate (90.0e18) and never exceeds it; with the callback after balances move (the ERC777 shape) every observation is strictly below it. A fuzz over the redeemed share of supply and the callback placement holds the same bound for every size. A redemption without allowance reverts and pays nothing, with the treasury untouched. The plain-token control is unchanged.
+
+**Negative control, recorded:** with the old burn-first order restored, 3 of the 6 fail: 99.999e18 seen against 90.0e18 with the pre-transfer callback, 90.999e18 against 90.0e18 with the post-transfer one, and the fuzz found a redemption size that read **298.7e18 against 90.0e18**, more than three times the real rate. Round 23 had measured only the 10%-of-supply case (1,013 bps); the overstatement grows without bound as the redeemed share approaches the whole supply, which makes the original finding somewhat worse than it was recorded and the fix correspondingly more worthwhile.
+
+**Not changed, and why:** `claim()` has an analogous instant. It zeroes the claimer's reward in storage and then transfers it, so a pre-transfer callback on the stock token would see `redeemableStock()` too high by exactly the reward in flight. That ordering is checks-effects-interactions on a function that pays out, and reversing it would be the less safe trade; the amount is one staker's claim rather than a share of supply; and it is unreachable for the same reason as before (no attested token has transfer callbacks). Recorded so the scope of this fix is not overstated: it closes the redemption path, which was the one that scaled.
+
+**Status of round 23's finding 1:** fixed here. Finding 2 (no deadline on buy/sell/redeem) remains informational and unchanged.
+
+**Verification:** full suite after the change, every file including both solvency invariant campaigns, the system invariant campaign and the real-Ink fork tests: **114 suites / 672 tests / 0 failed** (round 24: 112 / 648; round 25 added 2 suites and 22 tests; this round adds 2 tests). The deployed TEST generation does not contain this change, or any since round 2: it reaches users at the next redeploy.
 
 ## Pre-launch checks
 

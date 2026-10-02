@@ -425,9 +425,17 @@ contract StocksStaking is ReentrancyGuard {
 
         _shrinkRewardsBy(stockOut + protocolCut, balance, earned);
 
-        tstToken.safeTransferFrom(msg.sender, BURN_ADDRESS, tstAmount);
+        // The stock leaves BEFORE the TST is burned, on purpose. `quoteRedeem` / `redeemableStock` publish
+        // treasury / non-burned supply through views that `nonReentrant` does not cover, and these three
+        // transfers move the two sides of that ratio one at a time. Burning first shrank the denominator while
+        // the stock was still here, so mid-call the views read a rate higher than any rate ever settled
+        // (round 23: 10.13% too high on a 10%-of-supply redemption) -- the `get_virtual_price` shape. Paying
+        // out first means every intermediate state reads at or BELOW the settled rate instead, which is the
+        // harmless direction for anything that trusts the quote. Nothing is paid for free by the reordering:
+        // the burn is in the same transaction and reverts all three transfers if it fails.
         stockToken.safeTransfer(msg.sender, stockOut);
         if (protocolCut > 0) stockToken.safeTransfer(protocol, protocolCut);
+        tstToken.safeTransferFrom(msg.sender, BURN_ADDRESS, tstAmount);
 
         emit Redeemed(msg.sender, tstAmount, stockOut, protocolCut, retained);
     }

@@ -21,20 +21,23 @@ interface IRateObserver {
 contract RedemptionRateObserver is IRateObserver {
     StocksStaking public staking;
     uint256 public probe;
-    uint256 public observedStockOut;
+    uint256 public observations;
+    uint256 public maxObservedStockOut;
+    uint256 public minObservedStockOut = type(uint256).max;
 
     function configure(StocksStaking staking_, uint256 probe_) external {
         staking = staking_;
         probe = probe_;
     }
 
-    /// @dev Records only the FIRST observation. redeem() pays out in two transfers (the redeemer's stockOut
-    /// and then the protocol's cut), so the callback fires more than once; keeping the last one would measure
-    /// a partially-settled state and understate the window.
+    /// @dev Records the highest and lowest rate seen across EVERY callback. redeem() pays out in two transfers
+    /// (the redeemer's stockOut and then the protocol's cut), so the callback fires more than once, and the
+    /// claim under test is about every intermediate state, not just one of them.
     function observe() external override {
-        if (observedStockOut != 0) return;
         (uint256 stockOut,,) = staking.quoteRedeem(probe);
-        observedStockOut = stockOut;
+        observations++;
+        if (stockOut > maxObservedStockOut) maxObservedStockOut = stockOut;
+        if (stockOut < minObservedStockOut) minObservedStockOut = stockOut;
     }
 }
 
@@ -70,7 +73,8 @@ contract CallbackStock is ERC20 {
 /// @notice Round 23 (2026-10-01, user-directed: work the standard published audit-finding taxonomy -- the
 /// kind catalogued on Solodit -- class by class against this codebase). Most classes were already closed by
 /// rounds 1-22 and are recorded in AUDIT.md rather than retested here. This file carries the two classes the
-/// sweep found genuinely UNCOVERED.
+/// sweep found genuinely UNCOVERED. The first (read-only reentrancy on the redemption rate) was fixed in
+/// round 26 and its tests now pin the fixed behaviour; the second (no deadline) remains informational.
 ///
 /// Round 10 did check read-only reentrancy, but only against `StocksHook.getReserves()` and the price
 /// accumulator, and correctly concluded those are live Uniswap state with no on-chain consumer. It never
@@ -133,31 +137,27 @@ contract StocksAuditR23SoloditTest is Test {
     // Class: read-only reentrancy (NOT previously covered for the redemption rate)
     // ============================================================
 
-    /// @notice FINDING (Low, latent -- conditional on the stock token having a transfer callback).
+    /// @notice FIXED in round 26 (was: Low, latent, found in round 23).
     ///
-    /// `redeem()` mutates the two inputs of its own published rate in two SEPARATE external calls:
+    /// `redeem()` moves the two inputs of its own published rate in SEPARATE external calls, and the views that
+    /// publish that rate (`quoteRedeem` / `redeemableStock`: treasury balance over `nonBurnedSupply()`) are not
+    /// covered by `nonReentrant`. The original order burned the TST first:
     ///
-    ///     tstToken.safeTransferFrom(msg.sender, BURN_ADDRESS, tstAmount);  // denominator drops here
-    ///     stockToken.safeTransfer(msg.sender, stockOut);                   // numerator drops here
+    ///     tstToken.safeTransferFrom(msg.sender, BURN_ADDRESS, tstAmount);  // denominator dropped here
+    ///     stockToken.safeTransfer(msg.sender, stockOut);                   // numerator dropped here
     ///     if (protocolCut > 0) stockToken.safeTransfer(protocol, protocolCut);
     ///
-    /// `quoteRedeem` / `redeemableStock` divide the treasury balance by `nonBurnedSupply()`. Between those
-    /// calls the denominator has already shrunk by the full `tstAmount` while the numerator still holds stock
-    /// that is about to leave, so the published rate is transiently HIGHER than any rate that is ever actually
-    /// settled -- higher than before the redemption and higher than after it. `nonReentrant` does not help:
-    /// it guards state-changing entry points, and this is a view.
+    /// so between those calls the supply had already shrunk while the stock was still in the treasury, and the
+    /// published rate was transiently HIGHER than any rate ever settled. Measured in round 23 on this exact
+    /// scenario: 99.999e18 mid-call against a settled 90.8e18, 1,013 bps too high. The loss would have landed on
+    /// whoever trusted the quote at that instant (a lending market valuing TST collateral, say). It was never
+    /// reachable with the attested tokens, which have no transfer callbacks.
     ///
-    /// Measured below with a pre-transfer callback: the rate an integrator reads mid-redemption overstates the
-    /// settled rate by ~11%. Nothing is stolen from this protocol directly; the loss would land on whoever
-    /// trusts the inflated quote (a lending market valuing TST collateral, say).
-    ///
-    /// NOT currently reachable: every attested xStock wrapper is a plain ERC20/ERC4626 with no transfer
-    /// callback (confirmed by the existing 723-wrapper sweep), TSTToken is a plain ERC20Votes whose transfers
-    /// make no external calls, and the burn goes to a dead address. So this needs either a future stock token
-    /// with callbacks or a future code change that introduces one. Recorded as a latent finding with a
-    /// concrete mitigation (publish the rate behind a reentrancy-status check, or move the TST burn to after
-    /// the stock transfers so the denominator never leads the numerator) rather than left undocumented.
-    function test_R23_ReadOnlyReentrancy_RedemptionRateIsInflatedMidRedeem() public {
+    /// The fix pays the stock out first and burns last. Every intermediate state now has the numerator leading
+    /// the denominator, so the rate reads at or BELOW the rate before the redemption, which is itself at or
+    /// below the settled one. These tests observe every callback during the payout, with the callback placed
+    /// both before and after balances move, and pin that nothing above the pre-redemption rate is ever seen.
+    function test_R23_ReadOnlyReentrancy_RateIsNeverOverstatedMidRedeem_PreTransferCallback() public {
         stock.arm(address(observer), address(staking), true); // callback fires before balances move
 
         uint256 rateBefore = _rate();
@@ -165,53 +165,80 @@ contract StocksAuditR23SoloditTest is Test {
         vm.prank(redeemer);
         staking.redeem(100_000e18, 0);
 
-        uint256 rateDuring = observer.observedStockOut();
         uint256 rateAfter = _rate();
+        console.log("rate before   (stock wei per 1000 TST):", rateBefore);
+        console.log("highest seen DURING the redemption:    ", observer.maxObservedStockOut());
+        console.log("lowest seen DURING the redemption:     ", observer.minObservedStockOut());
+        console.log("rate after    (stock wei per 1000 TST):", rateAfter);
 
-        console.log("rate before  (stock wei per 1000 TST):", rateBefore);
-        console.log("rate DURING  (stock wei per 1000 TST):", rateDuring);
-        console.log("rate after   (stock wei per 1000 TST):", rateAfter);
-        console.log("overstatement vs settled rate (bps):", ((rateDuring - rateAfter) * 10_000) / rateAfter);
+        assertEq(observer.observations(), 2, "sanity: both payout transfers were observed");
+        assertLe(observer.maxObservedStockOut(), rateBefore, "no mid-redeem state reads above the pre-redeem rate");
+        assertLe(observer.maxObservedStockOut(), rateAfter, "nor above the rate that is finally settled");
+        assertLt(observer.minObservedStockOut(), rateBefore, "the window still exists, it now errs low");
 
-        assertGt(rateDuring, rateBefore, "mid-redeem rate must exceed the pre-redeem rate");
-        assertGt(rateDuring, rateAfter, "AUDIT: mid-redeem rate exceeds any rate ever actually settled");
-
-        // The settled rate itself only ever rises for those who stay -- the transient spike is the bug, not
-        // the permanent increase, which is the documented and intended behaviour.
+        // The settled rate itself only ever rises for those who stay: that is the intended behaviour.
         assertGe(rateAfter, rateBefore, "settled rate must not fall for remaining holders");
-        console.log("CONFIRMED: quoteRedeem transiently publishes a rate higher than any settled rate");
     }
 
-    /// @notice The same window with the callback firing AFTER balances settle (the ERC777 `tokensReceived`
-    /// shape). The overstatement is smaller -- only the protocol's cut is still sitting in the treasury,
-    /// about to leave -- but it is still strictly above the settled rate, so the window is not an artifact of
-    /// one particular callback placement.
-    function test_R23_ReadOnlyReentrancy_WindowExistsForPostTransferCallbacksToo() public {
+    /// @notice The same with the callback firing AFTER balances settle (the ERC777 `tokensReceived` shape):
+    /// both observations now see stock that has already left against a supply that has not yet shrunk.
+    function test_R23_ReadOnlyReentrancy_RateIsNeverOverstatedMidRedeem_PostTransferCallback() public {
         stock.arm(address(observer), address(staking), false);
+
+        uint256 rateBefore = _rate();
 
         vm.prank(redeemer);
         staking.redeem(100_000e18, 0);
 
-        uint256 rateDuring = observer.observedStockOut();
         uint256 rateAfter = _rate();
+        console.log("highest seen DURING (post-transfer callback):", observer.maxObservedStockOut());
+        console.log("rate before / after:", rateBefore, rateAfter);
 
-        console.log("rate DURING (post-transfer callback):", rateDuring);
-        console.log("rate after:", rateAfter);
-        assertGt(rateDuring, rateAfter, "AUDIT: even a post-transfer callback sees an over-stated rate");
-        console.log("CONFIRMED: the window is inherent to the ordering, not to callback placement");
+        assertEq(observer.observations(), 2, "sanity: both payout transfers were observed");
+        assertLt(observer.maxObservedStockOut(), rateBefore, "every post-transfer state reads below the pre-redeem rate");
+        assertLt(observer.maxObservedStockOut(), rateAfter, "and below the settled rate");
     }
 
-    /// @notice Control: with no callback at all -- the real, currently-attested token shape -- there is no
-    /// observable intermediate state, so the finding above is genuinely latent rather than live.
+    /// @notice Whatever share of the supply is redeemed, and wherever the callback sits, no observable state
+    /// during the payout reads above the rate from before the redemption.
+    function testFuzz_R23_ReadOnlyReentrancy_NoRedemptionSizeOverstatesTheRate(uint256 amount, bool hookBefore) public {
+        amount = bound(amount, 1e18, SUPPLY - PROBE); // leave enough supply for the probe quote to be valid
+        stock.arm(address(observer), address(staking), hookBefore);
+
+        uint256 rateBefore = _rate();
+        vm.prank(redeemer);
+        staking.redeem(amount, 0);
+
+        assertGt(observer.observations(), 0, "sanity: the payout was observed");
+        assertLe(observer.maxObservedStockOut(), rateBefore, "never above the pre-redeem rate");
+        assertLe(observer.maxObservedStockOut(), _rate(), "never above the settled rate");
+    }
+
+    /// @notice The reordering pays nothing for free: if the burn fails, the payout is undone with it.
+    function test_R23_RedeemWithoutAllowance_RevertsAndPaysNothing() public {
+        vm.prank(redeemer);
+        tst.approve(address(staking), 0);
+
+        uint256 treasuryBefore = stock.balanceOf(address(staking));
+        vm.prank(redeemer);
+        vm.expectRevert();
+        staking.redeem(100_000e18, 0);
+
+        assertEq(stock.balanceOf(redeemer), 0, "the redeemer keeps no stock when the burn fails");
+        assertEq(stock.balanceOf(address(staking)), treasuryBefore, "the treasury is untouched");
+        assertEq(tst.balanceOf(BURN), 0, "nothing was burned");
+    }
+
+    /// @notice Control: with no callback at all (the real, currently-attested token shape) there is no
+    /// observable intermediate state in the first place.
     function test_R23_Control_WithNoTransferCallback_NoObservableWindowExists() public {
         uint256 rateBefore = _rate();
 
         vm.prank(redeemer);
         staking.redeem(100_000e18, 0);
 
-        assertEq(observer.observedStockOut(), 0, "no callback armed means the rate was never read mid-call");
+        assertEq(observer.observations(), 0, "no callback armed means the rate was never read mid-call");
         assertGe(_rate(), rateBefore, "settled rate still only rises for those who stay");
-        console.log("CONFIRMED: with a plain ERC20 stock token the window is unobservable");
     }
 
     // ============================================================
