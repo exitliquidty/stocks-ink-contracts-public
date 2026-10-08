@@ -20,6 +20,8 @@ import {ERC20Votes} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Vo
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {Time} from "@openzeppelin/contracts/utils/types/Time.sol";
 import {ERC6372Utils} from "@openzeppelin/contracts/utils/ERC6372Utils.sol";
+import {Checkpoints} from "@openzeppelin/contracts/utils/structs/Checkpoints.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 /// @title TSTToken
 /// @notice A Tokenized Stock Treasury token: a fixed-supply ERC20 with vote checkpoints.
@@ -28,6 +30,14 @@ import {ERC6372Utils} from "@openzeppelin/contracts/utils/ERC6372Utils.sol";
 /// the dead address's balance. Transfers make no external calls. As with any ERC20Votes token, a balance only
 /// counts as voting power once its holder has delegated (to itself or to someone else).
 contract TSTToken is ERC20Votes {
+    using Checkpoints for Checkpoints.Trace208;
+
+    /// @notice The address TST is burned to.
+    address public constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
+
+    /// @dev History of the burn address's balance, on the same clock as the vote checkpoints.
+    Checkpoints.Trace208 private _burnedCheckpoints;
+
     /// @notice Mints the whole supply once.
     /// @dev `name_` also becomes the EIP-712 domain name, which this OpenZeppelin release stores as a short
     /// string, so a name longer than 31 bytes reverts here.
@@ -53,5 +63,22 @@ contract TSTToken is ERC20Votes {
     /// @return The string "mode=timestamp".
     function CLOCK_MODE() public view override returns (string memory) {
         return ERC6372Utils.timestampClockMode(clock);
+    }
+
+    /// @notice The burn address's balance at the end of `timepoint`.
+    /// @dev Lets the governor measure circulating supply at a proposal's snapshot exactly, alongside
+    /// `getPastTotalSupply` (Sherlock review: reading the live balance let the first vote decide the figure).
+    /// @param timepoint A timestamp on this token's clock.
+    /// @return The burned amount at that time.
+    function getPastBurned(uint256 timepoint) external view returns (uint256) {
+        return _burnedCheckpoints.upperLookupRecent(SafeCast.toUint48(timepoint));
+    }
+
+    /// @dev Records the burn address's new balance whenever TST is sent to it.
+    function _update(address from, address to, uint256 value) internal override {
+        super._update(from, to, value);
+        if (to == BURN_ADDRESS) {
+            _burnedCheckpoints.push(clock(), SafeCast.toUint208(balanceOf(BURN_ADDRESS)));
+        }
     }
 }

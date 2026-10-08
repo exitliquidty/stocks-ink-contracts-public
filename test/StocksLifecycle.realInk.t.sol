@@ -395,7 +395,9 @@ contract StocksLifecycleRealInkTest is Test {
             _swap(dave, i % 2 == 0, i % 2 == 0 ? 3e18 : _bal(token, dave) / 4);
             _assertHookSolvent("while the order fills");
         }
-        vm.warp(expiry + 1 hours);
+        // Never backwards: the five swaps above may already have carried the clock past the order's expiry, and a
+        // real chain's clock cannot go back (the token's burn history, like its vote checkpoints, relies on that).
+        if (expiry + 1 hours > _now()) vm.warp(expiry + 1 hours);
         _swap(dave, true, 1e18); // a swap after expiry finishes the execution
         (uint256 quoteBeforeClaim,,) = staking.quoteRedeem(1_000_000e18);
         uint256 burnedByStaking = staking.claimLiquidatedTst();
