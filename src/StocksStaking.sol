@@ -146,7 +146,9 @@ contract StocksStaking is ReentrancyGuard {
 
     /// @dev Inflows restart the reward period once those added since the last start or restart total at least
     /// 1/10 of what is still left to stream. Below that they are added to the time remaining, so dust donations
-    /// cannot keep pushing the period out.
+    /// cannot keep pushing the period out. The one exception is a stream whose rate is zero (after a liquidation
+    /// has committed all of it): nothing is left, so any inflow restarts the period. Nothing is being streamed
+    /// then, so that delays nothing, and a real inflow would restart it in the same way.
     uint256 private constant MATERIAL_INFLOW_DIVISOR = 10;
 
     /// @notice Shortest reward period governance may set.
@@ -568,6 +570,9 @@ contract StocksStaking is ReentrancyGuard {
 
     /// @notice Collects whatever the liquidation order has bought so far and burns it. Callable by anyone, at
     /// any time while the order exists.
+    /// @dev Reverts when there is no order to settle: before the first liquidation, and after an expired order
+    /// has been claimed in full (the hook deletes it at that point). Callers that cannot afford a revert should
+    /// check `getOrder(...).sellRate != 0` on the hook first, as `liquidateTreasury` does.
     /// @return tstBurned TST burned by this call.
     function claimLiquidatedTst() external nonReentrant returns (uint256 tstBurned) {
         tstBurned = _claimLiquidatedTst();

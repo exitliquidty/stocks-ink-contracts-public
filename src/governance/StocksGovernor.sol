@@ -128,6 +128,8 @@ contract StocksGovernor is
     }
 
     /// @notice Votes needed to create a proposal: `proposalThresholdBps` of the current circulating supply.
+    /// @dev The inherited `setProposalThreshold` stays callable through a passed proposal but is inert: this
+    /// function never reads the value it stores, so the only effect is its event.
     /// @return The threshold, in votes.
     function proposalThreshold() public view override(Governor, GovernorSettings) returns (uint256) {
         IERC20 votesToken = IERC20(address(token()));
