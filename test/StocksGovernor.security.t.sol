@@ -32,7 +32,7 @@ contract StocksGovernorSecurityTest is Test {
         token.delegate(alice);
 
         gov = new StocksGovernor(
-            string.concat(token.name(), " Governor"), IVotes(address(token)), VOTING_DELAY, VOTING_PERIOD, 0, QUORUM_NUMERATOR
+            string.concat(token.name(), " Governor"), IVotes(address(token)), VOTING_DELAY, VOTING_PERIOD, 1, QUORUM_NUMERATOR
         );
     }
 
@@ -125,7 +125,7 @@ contract StocksGovernorSecurityTest is Test {
 
     function test_MinimumBoundaryValues_DeploySuccessfully() public {
         StocksGovernor boundaryGov = new StocksGovernor(
-            "X Governor", IVotes(address(token)), gov.MIN_VOTING_DELAY(), gov.MIN_VOTING_PERIOD(), 0, gov.MIN_QUORUM_NUMERATOR()
+            "X Governor", IVotes(address(token)), gov.MIN_VOTING_DELAY(), gov.MIN_VOTING_PERIOD(), 1, gov.MIN_QUORUM_NUMERATOR()
         );
         assertEq(boundaryGov.votingDelay(), gov.MIN_VOTING_DELAY());
         assertEq(boundaryGov.votingPeriod(), gov.MIN_VOTING_PERIOD());
@@ -146,7 +146,7 @@ contract StocksGovernorSecurityTest is Test {
 
         TSTToken otherToken = new TSTToken("Apple Stock", "AAPLTST", SUPPLY, alice);
         StocksGovernor otherGov = new StocksGovernor(
-            string.concat(otherToken.name(), " Governor"), IVotes(address(otherToken)), VOTING_DELAY, VOTING_PERIOD, 0, QUORUM_NUMERATOR
+            string.concat(otherToken.name(), " Governor"), IVotes(address(otherToken)), VOTING_DELAY, VOTING_PERIOD, 1, QUORUM_NUMERATOR
         );
         assertEq(otherGov.name(), "Apple Stock Governor");
         assertTrue(keccak256(bytes(gov.name())) != keccak256(bytes(otherGov.name())));
