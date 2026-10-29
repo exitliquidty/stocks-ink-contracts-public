@@ -177,12 +177,12 @@ contract StocksGovernorQuorumLockRegressionTest is Test {
         gov.updateQuorumNumerator(100);
     }
 
-    /// @dev Reviewed earlier and left alone on purpose: reachable, but inert, because proposalThreshold() is
-    /// computed live from the immutable basis points and never reads the stored setting.
-    function test_SetProposalThreshold_StaysReachableButInert() public {
+    /// @dev Sherlock #22: the inherited setter used to be reachable but inert; it now reverts like the others.
+    function test_SetProposalThreshold_Reverts() public {
         uint256 before_ = gov.proposalThreshold();
         bytes memory data = abi.encodeWithSignature("setProposalThreshold(uint256)", uint256(999_999_999e18));
         _proposeAndVote(whale, whale, address(gov), data, "Attempt to change the proposal threshold");
+        vm.expectRevert(StocksGovernor.VotingSettingsAreImmutable.selector);
         _execute(address(gov), data, "Attempt to change the proposal threshold");
         assertEq(gov.proposalThreshold(), before_, "the live threshold ignores the stored value");
         assertEq(before_, ((SUPPLY) * THRESHOLD_BPS) / 10_000, "still 0.25% of circulating supply");
@@ -244,8 +244,8 @@ contract StocksGovernorQuorumLockRegressionTest is Test {
 
         string memory d = "fuzz";
         _proposeAndVote(whale, whale, address(gov), inner, d);
-        // setProposalThreshold (picks 3 and 6) is reachable but inert by design; everything else is locked.
-        if (pick != 3 && pick != 6) vm.expectRevert(StocksGovernor.VotingSettingsAreImmutable.selector);
+        // Every setter, setProposalThreshold included (Sherlock #22), is locked.
+        vm.expectRevert(StocksGovernor.VotingSettingsAreImmutable.selector);
         _execute(address(gov), inner, d);
 
         assertEq(gov.quorumNumerator(), qn);
