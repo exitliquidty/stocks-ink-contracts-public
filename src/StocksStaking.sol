@@ -551,6 +551,8 @@ contract StocksStaking is ReentrancyGuard {
         );
         // Remember the order so its proceeds can be collected and so a second order cannot overlap it.
         pendingLiquidationExpiration = orderKey.expiration;
+        // Nothing is owed to the hook any more; clear what the deposit and cut did not use (Sherlock #33).
+        stockToken.forceApprove(hook, 0);
 
         // The committed stock has left, and so has the stream it was funding.
         lastNotifiedBalance = balance - stockCommitted;
