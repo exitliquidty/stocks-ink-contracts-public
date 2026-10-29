@@ -471,13 +471,14 @@ contract StocksHook is TWAMM {
             // than attempting a partial refund here (afterSwap's own returned delta can only adjust the
             // UNSPECIFIED/output currency, never the specified/input stock side the cut was taken from, and a
             // raw ERC20 refund to `sender` risks landing in a router contract instead of the real trader), the
-            // trade simply reverts outright when the cut would consume the entire real fill or more, so the
-            // trader gets nothing worse than "try again with a wider limit," never a one-sided loss. Normal,
-            // untruncated trades are unaffected: the cut is only ~2% of stockIn, always far below the ~98%
-            // that actually reaches the pool.
+            // trade simply reverts outright whenever the price limit stopped it short of the full input, so the
+            // trader gets nothing worse than "try again with a wider limit," never a one-sided loss. (It used
+            // to revert only when the cut was at least the whole fill, which still let a partial fill pay a
+            // cut many times its intended rate -- Sherlock review.) Untruncated trades are unaffected: the
+            // pool always swaps exactly `stockIn - preSwapStockCut`.
             uint256 actualCoreStockSwapped =
                 uint256(uint128(specifiedIsCurrency0 ? -delta.amount0() : -delta.amount1()));
-            if (preSwapStockCut >= actualCoreStockSwapped) revert PreSwapCutWouldExceedActualFill();
+            if (actualCoreStockSwapped < stockIn - preSwapStockCut) revert PreSwapCutWouldExceedActualFill();
         }
 
         // The swap's output. Not positive only if nothing was filled, in which case there is nothing to charge.
