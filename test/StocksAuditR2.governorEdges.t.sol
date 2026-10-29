@@ -21,7 +21,7 @@ contract StocksAuditR2GovernorEdgesTest is Test {
         token = new TSTToken("Tesla Stock", "TSLATST", SUPPLY, alice);
         vm.prank(alice);
         token.delegate(alice);
-        gov = new StocksGovernor("Tesla Governor", IVotes(address(token)), 1 hours, 1 hours, 0, 10);
+        gov = new StocksGovernor("Tesla Governor", IVotes(address(token)), 1 hours, 1 hours, 1, 10);
     }
 
     /// @dev External so `vm.expectRevert` can be used more than once in a test (a revert inside `new` in the test's own
@@ -36,8 +36,9 @@ contract StocksAuditR2GovernorEdgesTest is Test {
 
         StocksGovernor full = this.deployGov(10_000);
         assertEq(full.proposalThreshold(), SUPPLY, "100% of the circulating supply");
-        StocksGovernor none = this.deployGov(0);
-        assertEq(none.proposalThreshold(), 0);
+        // Sherlock #29: zero is rejected, so no generation can have permissionless proposal creation.
+        vm.expectRevert(StocksGovernor.ProposalThresholdBpsZero.selector);
+        this.deployGov(0);
     }
 
     function _propose(string memory description) internal returns (uint256 id) {

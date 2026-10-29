@@ -362,6 +362,8 @@ contract StocksLaunchFactoryLaunchTest is Test {
         this.newFactoryRaw(a, 0, MIN_DURATION, MAX_DURATION, 25);
         vm.expectRevert(StocksLaunchFactory.InvalidProposalThreshold.selector);
         this.newFactoryRaw(a, THRESHOLD, MIN_DURATION, MAX_DURATION, 10_001);
+        vm.expectRevert(StocksLaunchFactory.InvalidProposalThreshold.selector);
+        this.newFactoryRaw(a, THRESHOLD, MIN_DURATION, MAX_DURATION, 0);
         // the boundary itself is accepted
         StocksLaunchFactory atBoundary = this.newFactoryRaw(a, THRESHOLD, MIN_DURATION, MAX_DURATION, 10_000);
         assertEq(atBoundary.proposalThresholdBps(), 10_000, "100% is a valid proposal threshold");

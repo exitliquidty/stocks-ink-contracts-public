@@ -174,7 +174,7 @@ contract StocksStakingRestartNeverShortensRegressionTest is Test {
     // ================= the attack =================
 
     /// @dev Day 1 of a 30-day, 1,000-stock stream. Governance lowers the duration to 1 day. A whale with 100x
-    /// the honest stake joins, donates just over 1% of the leftover to force the restart, holds one day and
+    /// the honest stake joins, donates just over 10% of the leftover to force the restart, holds one day and
     /// claims. Before the fix the restart packed all ~967 of leftover (plus the donation) into that one day and
     /// the whale took ~99% of it. Now the stream keeps its 29-day schedule and the whale earns one day of it.
     function test_Attack_LoweredDuration_SniperCannotCompressTheLeftoverIntoOneDay() public {
@@ -185,7 +185,7 @@ contract StocksStakingRestartNeverShortensRegressionTest is Test {
 
         _stake(whale, 100_000e18);
         uint256 leftover = _leftover();
-        uint256 donation = leftover / 100 + 1;
+        uint256 donation = leftover / 10 + 1;
         stock.mint(address(staking), donation);
         vm.prank(whale);
         staking.notifyRewardAmount();
@@ -203,7 +203,7 @@ contract StocksStakingRestartNeverShortensRegressionTest is Test {
         uint256 timeShare = ((leftover + donation) * 1 days) / 29 days;
         assertLe(whaleGot, timeShare, "at most one day's share of a 29-day stream");
         assertLt(whaleGot, 40e18, "about 33, not about 967");
-        assertGt(whaleGot, donation, "sanity: the whale still earns its honest pro-rata day");
+        assertGt(whaleGot, 30e18, "sanity: the whale still earns its honest pro-rata day");
 
         // The honest staker still collects the rest of the stream it was already owed, on schedule.
         vm.warp(staking.periodFinish() + 1);
@@ -244,7 +244,7 @@ contract StocksStakingRestartNeverShortensRegressionTest is Test {
         uint256 pfBefore = staking.periodFinish();
         uint256 remaining = pfBefore - _now();
         uint256 leftover = _leftover();
-        reward = bound(reward, leftover / 100 + 1, 1_000_000e18); // always material
+        reward = bound(reward, leftover / 10 + 1, 1_000_000e18); // always material
         _inflow(reward);
 
         uint256 expected = newDays * 1 days > remaining ? newDays * 1 days : remaining;
@@ -269,7 +269,7 @@ contract StocksStakingRestartNeverShortensRegressionTest is Test {
         _stake(whale, whaleStake);
         uint256 remaining = staking.periodFinish() - _now();
         uint256 leftover = _leftover();
-        uint256 donation = leftover / 100 + 1;
+        uint256 donation = leftover / 10 + 1;
         _inflow(donation);
 
         uint256 hold = 1 hours + (uint256(keccak256(abi.encode(seed, "h"))) % 3 days);

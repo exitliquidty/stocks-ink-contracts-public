@@ -96,8 +96,9 @@ interface IStocksHookMinimal {
 ///    `notifyRewardAmount`. Any stock that arrives, from the hook or as a plain transfer, is treated the same
 ///    way: it is added to a reward stream.
 ///  - Rewards. A Synthetix-style stream: `rewardRate` stock per second until `periodFinish`, shared by stakers
-///    in proportion to stake. An inflow of at least 1/100 of what is still left to stream restarts the period
-///    (never shortening it), so a late large inflow cannot be captured by a stake that arrives just after it;
+///    in proportion to stake. Inflows totalling at least 1/10 of what is still left to stream, counted since the
+///    last start or restart, restart the period (never shortening it), so a late large inflow cannot be captured
+///    by a stake that arrives just after it;
 ///    smaller inflows are added to the time remaining. While nobody is staked, time passes and that part of
 ///    the stream stays in the treasury unassigned. Staking has no lock.
 ///  - What belongs to whom. Stock already earned by stakers ("vested") is theirs and nothing else can touch
@@ -144,9 +145,12 @@ contract StocksStaking is ReentrancyGuard {
     /// @dev Shortest reward period accepted by the constructor.
     uint256 private constant MIN_REWARDS_DURATION = 1 hours;
 
-    /// @dev An inflow restarts the reward period if it is at least 1/100 of what is still left to stream. Below
-    /// that it is added to the time remaining, so dust donations cannot keep pushing the period out.
-    uint256 private constant MATERIAL_INFLOW_DIVISOR = 100;
+    /// @dev Inflows restart the reward period once those added since the last start or restart total at least
+    /// 1/10 of what is still left to stream. Below that they are added to the time remaining, so dust donations
+    /// cannot keep pushing the period out. The one exception is a stream whose rate is zero (after a liquidation
+    /// has committed all of it): nothing is left, so any inflow restarts the period. Nothing is being streamed
+    /// then, so that delays nothing, and a real inflow would restart it in the same way.
+    uint256 private constant MATERIAL_INFLOW_DIVISOR = 10;
 
     /// @notice Shortest reward period governance may set.
     uint256 public constant MIN_GOVERNABLE_REWARDS_DURATION = 1 days;
@@ -195,6 +199,11 @@ contract StocksStaking is ReentrancyGuard {
     /// @notice The part of the stock balance the reward accounting has recognised. Stock above this has arrived
     /// but has not yet been added to the stream.
     uint256 public lastNotifiedBalance;
+    /// @notice Inflows added to the running period without restarting it, since it last started or restarted.
+    /// @dev Judging each inflow on its own let a material amount be split into immaterial pieces (Sherlock
+    /// review). Not reduced when a redemption or liquidation shrinks the stream: a smaller leftover only makes
+    /// the next restart come sooner, and a restart never shortens anyone's vesting.
+    uint256 public inflowsSinceRestart;
 
     /// @notice Whether governance has paused the reward stream.
     bool public rewardsPaused;
@@ -462,7 +471,8 @@ contract StocksStaking is ReentrancyGuard {
 
     /// @notice Changes the reward period for future periods. Governor only.
     /// @dev Does not touch the period already running: a later restart runs over the longer of the new period
-    /// and the time still left, so lowering the period can never speed up what is already streaming.
+    /// and the time still left, so lowering the period can never speed up what is already streaming. With
+    /// nothing left to stream, a restart runs over the new period.
     /// @param newDuration The new period: a whole number of days, from 1 to 365.
     function setRewardsDuration(uint256 newDuration) external onlyGovernor {
         if (
@@ -543,6 +553,8 @@ contract StocksStaking is ReentrancyGuard {
         );
         // Remember the order so its proceeds can be collected and so a second order cannot overlap it.
         pendingLiquidationExpiration = orderKey.expiration;
+        // Nothing is owed to the hook any more; clear what the deposit and cut did not use (Sherlock #33).
+        stockToken.forceApprove(hook, 0);
 
         // The committed stock has left, and so has the stream it was funding.
         lastNotifiedBalance = balance - stockCommitted;
@@ -562,6 +574,9 @@ contract StocksStaking is ReentrancyGuard {
 
     /// @notice Collects whatever the liquidation order has bought so far and burns it. Callable by anyone, at
     /// any time while the order exists.
+    /// @dev Reverts when there is no order to settle: before the first liquidation, and after an expired order
+    /// has been claimed in full (the hook deletes it at that point). Callers that cannot afford a revert should
+    /// check `getOrder(...).sellRate != 0` on the hook first, as `liquidateTreasury` does.
     /// @return tstBurned TST burned by this call.
     function claimLiquidatedTst() external nonReentrant returns (uint256 tstBurned) {
         tstBurned = _claimLiquidatedTst();
@@ -616,7 +631,9 @@ contract StocksStaking is ReentrancyGuard {
 
     /// @notice Burns the caller's TST for its share of the redeemable treasury, paid in stock.
     /// @dev The share is `tstAmount / nonBurnedSupply()` of `redeemableStock()`, less the flywheel cost. The rate
-    /// for holders who stay never falls as a result, because the cost's treasury share stays behind.
+    /// for holders who stay never falls as a result, because the cost's treasury share stays behind. A partial
+    /// redeemer keeps a claim on that share through their remaining TST, so the payout depends on the size and
+    /// order of redemptions, and splitting one redemption into several pays slightly more in total.
     /// @param tstAmount TST to burn. Must be approved to this contract.
     /// @param minStockOut Smallest acceptable payout.
     /// @return stockOut Stock paid to the caller.
@@ -733,7 +750,8 @@ contract StocksStaking is ReentrancyGuard {
 
     /// @dev Brings the accumulator up to date, then adds any newly arrived stock to the stream. After the period
     /// has ended the inflow starts a new one. During a period a material inflow restarts it over the longer of
-    /// `rewardsDuration` and the time left, and an immaterial one is spread over the time left. Does nothing
+    /// `rewardsDuration` and the time left (over `rewardsDuration` alone when nothing is left to stream), and an
+    /// immaterial one is spread over the time left. Does nothing
     /// with new stock while rewards are paused.
     function _notifyReward() internal {
         // Bring the accumulator up to date before anything that affects the rate.
@@ -756,11 +774,15 @@ contract StocksStaking is ReentrancyGuard {
         if (block.timestamp >= periodFinish) {
             rewardRate = reward / rewardsDuration;
             periodFinish = block.timestamp + rewardsDuration;
+            inflowsSinceRestart = 0;
         } else {
             uint256 remaining = periodFinish - block.timestamp;
             // What the running period still has to pay out.
             uint256 leftover = remaining * rewardRate;
-            if (reward * MATERIAL_INFLOW_DIVISOR >= leftover) {
+            // Materiality is judged on everything added since the last start or restart, not on this inflow
+            // alone, so splitting one inflow into many cannot avoid the restart.
+            uint256 added = inflowsSinceRestart + reward;
+            if (added * MATERIAL_INFLOW_DIVISOR >= leftover) {
                 // A restart must never SHORTEN the vesting of the existing leftover. Spreading it over a
                 // longer window is exactly what makes the restart rule a defence against late staking: a
                 // latecomer cannot capture what is already in the pot without staying for it. If governance
@@ -769,14 +791,19 @@ contract StocksStaking is ReentrancyGuard {
                 // permissionless anyone could stake, force it, and collect the compressed stream. Taking
                 // the longer of the two keeps the new duration in force for future periods while leaving
                 // the current leftover on at least its original schedule.
-                uint256 restartDuration = rewardsDuration > remaining ? rewardsDuration : remaining;
+                // With nothing left to stream there is nothing to protect, so the period starts fresh over
+                // `rewardsDuration` (Sherlock #28: otherwise dust inflows could keep a zero-rate window alive
+                // and the next real inflow would vest over it instead of the configured duration).
+                uint256 restartDuration = (leftover > 0 && remaining > rewardsDuration) ? remaining : rewardsDuration;
                 rewardRate = (reward + leftover) / restartDuration;
                 periodFinish = block.timestamp + restartDuration;
+                inflowsSinceRestart = 0;
             } else {
 
                 // An immaterial arrival does not move the period's end; it is spread over the time left. Anything lost to
                 // the division stays in the treasury.
                 rewardRate += reward / remaining;
+                inflowsSinceRestart = added;
             }
         }
         lastUpdateTime = block.timestamp;

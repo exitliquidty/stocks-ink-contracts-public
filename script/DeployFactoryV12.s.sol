@@ -142,6 +142,9 @@ contract DeployFactoryV12 is Script {
 
         (uint48 votingDelay, uint32 votingPeriod) =
             validateCastsAndInterval(votingDelayRaw, votingPeriodRaw, expirationInterval, block.timestamp);
+        // The contracts accept a zero threshold (Sherlock review). It is immutable for the whole generation and
+        // would let any address create proposals on every token's governor, so it is refused here.
+        require(proposalThresholdBps > 0, "PROPOSAL_THRESHOLD_BPS is zero: anyone could create proposals");
 
         // Human-error guard. An earlier generation shipped a TEST-profile value (a $10 graduation threshold) to Ink
         // mainnet by mistake. On Ink mainnet this refuses test-sized values unless ALLOW_TEST_PROFILE=true is set on

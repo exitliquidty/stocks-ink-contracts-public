@@ -306,6 +306,7 @@ contract StocksCurve is ReentrancyGuard {
 
         tstOut = quoteBuy(actualStockIn);
         if (tstOut == 0) revert ZeroAmount();
+        // Defensive only: quoteBuy() already caps tstOut at the remaining supply, so this cannot trigger (Sherlock #32).
         if (tokensSold + tstOut > CURVE_SUPPLY) revert CurveSoldOut();
         if (tstOut < minTstOut) revert SlippageExceeded();
 

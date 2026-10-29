@@ -24,6 +24,14 @@ import {GovernorVotesQuorumFraction} from
 import {IVotes} from "@openzeppelin/contracts/governance/utils/IVotes.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+/// @dev The part of TSTToken the governor needs beyond IVotes.
+interface IBurnHistory {
+    /// @notice The burn address's balance at the end of `timepoint`.
+    /// @param timepoint A timestamp on the token's clock.
+    /// @return The burned amount at that time.
+    function getPastBurned(uint256 timepoint) external view returns (uint256);
+}
+
 /// @title StocksGovernor
 /// @notice The governor deployed for each TST at graduation. TST holders vote, and the governor is the only
 /// address that may call the three governed functions on that token's staking contract: pause or resume
@@ -32,9 +40,10 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 /// from the stock contract. (1) Voting delay, voting period and quorum are fixed at deployment and can never
 /// be changed, not even by a proposal. (2) Quorum and the proposal threshold are measured against CIRCULATING
 /// supply, total supply minus what sits at the burn address, because TST is burned by transfer and total
-/// supply never falls. (3) The burned amount used for a proposal's quorum is pinned by its first vote, so the
-/// bar cannot move once voting has begun. Staked TST and TST held in the pool carry no votes while they sit
-/// there; a staker who wants to vote must unstake and delegate before the proposal's snapshot.
+/// supply never falls. (3) The burned amount used for a proposal's quorum is the one at its snapshot, read
+/// from the token's burn history, so the bar is fixed before voting begins. Staked TST and TST held in the
+/// pool carry no votes while they sit there; a staker who wants to vote must unstake and delegate before the
+/// proposal's snapshot.
 contract StocksGovernor is
     Governor,
     GovernorSettings,
@@ -56,11 +65,6 @@ contract StocksGovernor is
     /// @notice The address TST is burned to. Its balance is excluded from circulating supply.
     address public constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
 
-    /// @dev Burn-address balance recorded for a snapshot timepoint by the first vote cast at that timepoint.
-    mapping(uint256 timepoint => uint256 burned) private _burnedAtSnapshot;
-    /// @dev Whether a value has been recorded for a timepoint. Needed because the recorded value may be zero.
-    mapping(uint256 timepoint => bool recorded) private _burnSnapshotRecorded;
-
     /// @notice The voting delay is below the minimum.
     /// @param votingDelay The value supplied.
     /// @param minVotingDelay The minimum allowed.
@@ -78,6 +82,8 @@ contract StocksGovernor is
     /// @notice The proposal threshold exceeds 100%.
     /// @param proposalThresholdBps The value supplied.
     error ProposalThresholdBpsTooHigh(uint256 proposalThresholdBps);
+    /// @notice The proposal threshold is zero, which would let anyone create proposals (Sherlock #29).
+    error ProposalThresholdBpsZero();
 
     /// @notice Fixes the governor's settings for good.
     /// @param name_ Governor name; also its EIP-712 domain name, so at most 31 bytes.
@@ -105,6 +111,7 @@ contract StocksGovernor is
             revert QuorumNumeratorTooLow(quorumNumerator_, MIN_QUORUM_NUMERATOR);
         }
         if (proposalThresholdBps_ > BPS_DENOM) revert ProposalThresholdBpsTooHigh(proposalThresholdBps_);
+        if (proposalThresholdBps_ == 0) revert ProposalThresholdBpsZero();
         proposalThresholdBps = proposalThresholdBps_;
     }
 
@@ -123,7 +130,14 @@ contract StocksGovernor is
         revert VotingSettingsAreImmutable();
     }
 
+    /// @notice Always reverts: the proposal threshold is immutable (Sherlock #22: the inherited setter changed
+    /// nothing but emitted a misleading event).
+    function setProposalThreshold(uint256) public pure override {
+        revert VotingSettingsAreImmutable();
+    }
+
     /// @notice Votes needed to create a proposal: `proposalThresholdBps` of the current circulating supply.
+    /// @dev `proposalThresholdBps` is immutable and the inherited setter reverts.
     /// @return The threshold, in votes.
     function proposalThreshold() public view override(Governor, GovernorSettings) returns (uint256) {
         IERC20 votesToken = IERC20(address(token()));
@@ -132,42 +146,14 @@ contract StocksGovernor is
     }
 
     /// @notice Votes (For plus Abstain) a proposal with this snapshot needs in order to pass.
-    /// @dev The quorum percentage of supply at the snapshot minus burned TST. The burned figure is the one
-    /// recorded by the first vote at this timepoint; until a vote is cast it is read live.
+    /// @dev The quorum percentage of circulating supply at the snapshot: total supply minus burned TST, both
+    /// read from the token's own history at that timepoint. One fixed figure per proposal, which no vote, burn
+    /// or redemption after the snapshot can move (Sherlock review: it used to be pinned by the first vote).
     /// @param timepoint The proposal's snapshot timestamp.
     /// @return The quorum, in votes.
     function quorum(uint256 timepoint) public view override(Governor, GovernorVotesQuorumFraction) returns (uint256) {
-
-        uint256 burned = _burnSnapshotRecorded[timepoint]
-            ? _burnedAtSnapshot[timepoint]
-            : IERC20(address(token())).balanceOf(BURN_ADDRESS);
-        uint256 circulatingSupply = token().getPastTotalSupply(timepoint) - burned;
+        uint256 circulatingSupply =
+            token().getPastTotalSupply(timepoint) - IBurnHistory(address(token())).getPastBurned(timepoint);
         return (circulatingSupply * quorumNumerator(timepoint)) / quorumDenominator();
-    }
-
-    /// @dev The burn figure `quorum()` uses must describe the vote snapshot, not proposal creation. Those
-    /// are a whole `votingDelay` apart, and TST burns continuously in between through buy costs, liquidation
-    /// claims and redemptions. Recording it at creation therefore credits the circulating supply with tokens
-    /// that are already gone by the snapshot, setting quorum above its true value and making proposals fail
-    /// that should pass -- which matters here because quorum is immutable and already carries a large block
-    /// of permanently non-voting supply.
-    ///
-    /// It cannot simply be read inside `quorum()`, which is `view`. Recording it on the first vote instead
-    /// pins it at or after the snapshot, since voting is only possible once the proposal is Active. Any
-    /// error now falls on the side of a slightly LOWER quorum rather than a higher one, which is the safe
-    /// direction for a threshold that can never be adjusted.
-    function _castVote(
-        uint256 proposalId,
-        address account,
-        uint8 support,
-        string memory reason,
-        bytes memory params
-    ) internal override returns (uint256) {
-        uint256 timepoint = proposalSnapshot(proposalId);
-        if (!_burnSnapshotRecorded[timepoint]) {
-            _burnSnapshotRecorded[timepoint] = true;
-            _burnedAtSnapshot[timepoint] = IERC20(address(token())).balanceOf(BURN_ADDRESS);
-        }
-        return super._castVote(proposalId, account, support, reason, params);
     }
 }

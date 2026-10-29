@@ -48,7 +48,7 @@ contract StocksGovernorAudit3Test is Test {
         token.delegate(alice);
 
         gov = new StocksGovernor(
-            "Tesla Stock Governor", IVotes(address(token)), VOTING_DELAY, VOTING_PERIOD, 0, QUORUM_NUMERATOR
+            "Tesla Stock Governor", IVotes(address(token)), VOTING_DELAY, VOTING_PERIOD, 1, QUORUM_NUMERATOR
         );
 
         vm.warp(block.timestamp + 1);
@@ -130,13 +130,16 @@ contract StocksGovernorAudit3Test is Test {
         console.log("CONFIRMED FIXED: votingPeriod can never be collapsed via governance, closing the near-instant-second-proposal escalation");
     }
 
-    /// @dev Confirms setProposalThreshold is reachable but inert -- StocksGovernor's own override
+    /// @dev Sherlock #22: setProposalThreshold now reverts like the other setters. StocksGovernor's own override
     /// ignores GovernorSettings' stored value entirely, so this specific setter poses no risk.
-    function test_SetProposalThreshold_ReachableButInert() public {
+    function test_SetProposalThreshold_Reverts() public {
         uint256 before = gov.proposalThreshold();
         bytes memory data = abi.encodeWithSelector(GovernorSettings.setProposalThreshold.selector, uint256(999_999_999e18));
-        _proposeVoteExecute(address(gov), data, "Attempt to change proposal threshold");
-        assertEq(gov.proposalThreshold(), before, "proposalThreshold() must be unaffected -- it's computed fresh from the immutable proposalThresholdBps set at construction, not GovernorSettings' stored value");
-        console.log("CONFIRMED SAFE: setProposalThreshold changes GovernorSettings' internal storage but proposalThreshold() ignores it entirely");
+        (, address[] memory targets, uint256[] memory values, bytes[] memory calldatas) =
+            _proposeAndVoteToSucceeded(address(gov), data, "Attempt to change proposal threshold");
+        bytes32 descHash = keccak256(bytes("Attempt to change proposal threshold"));
+        vm.expectRevert(StocksGovernor.VotingSettingsAreImmutable.selector);
+        gov.execute(targets, values, calldatas, descHash);
+        assertEq(gov.proposalThreshold(), before, "proposalThreshold() is computed from the immutable bps");
     }
 }

@@ -59,7 +59,8 @@ contract StocksGraduator is IUnlockCallback, ReentrancyGuard {
     uint256 public constant BPS_DENOM = 10_000;
     /// @notice Smallest TST seed accepted, in basis points of the token's total supply (1%). A smaller seed would
     /// make a pool too thin to trade against, so graduation reverts instead and can be retried once selling on
-    /// the curve has brought the seed back up.
+    /// the curve has brought the seed back up. Measured on the amount handed to `graduate`, that is before the
+    /// fixed `HOOK_TST_RESERVE_WEI` is set aside for the hook; `StocksCurve.buy` guards the same figure.
     uint256 public constant MIN_TST_SEED_SUPPLY_BPS = 100;
 
     /// @notice TST handed to the hook at graduation to cover rounding in its TWAMM accounting.

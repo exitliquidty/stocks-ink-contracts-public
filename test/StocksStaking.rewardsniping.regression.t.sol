@@ -167,15 +167,15 @@ contract StocksStakingRewardSnipingRegressionTest is Test {
         assertEq(staking.rewardRate(), rateBefore + reward / remaining, "it is streamed over the remaining window");
     }
 
-    function test_Threshold_ExactlyOneHundredthOfLeftover_IsMaterial_OneWeiLess_IsNot() public {
+    function test_Threshold_ExactlyOneTenthOfLeftover_IsMaterial_OneWeiLess_IsNot() public {
         _stake(honest, 1_000e18);
         _inflow(1_000e18);
         vm.warp(_now() + 10 days);
 
         uint256 pfBefore = staking.periodFinish();
         uint256 leftover = _leftover();
-        uint256 exact = leftover / 100;
-        while (exact * 100 < leftover) exact++; // the smallest inflow with reward * 100 >= leftover
+        uint256 exact = leftover / 10;
+        while (exact * 10 < leftover) exact++; // the smallest inflow with reward * 10 >= leftover
 
         uint256 id = vm.snapshotState();
         _inflow(exact);
@@ -216,7 +216,7 @@ contract StocksStakingRewardSnipingRegressionTest is Test {
     }
 
     /// @dev Griefing with MATERIAL donations is possible but costs real value each time: every restart needs a
-    /// donation of at least 1% of what is left, and every donated wei goes to the stakers.
+    /// donation of at least 10% of what is left, and every donated wei goes to the stakers.
     function test_MaterialDonationGriefing_CostsRealValueEveryTime() public {
         _stake(honest, 1_000e18);
         _inflow(1_000e18);
@@ -224,14 +224,14 @@ contract StocksStakingRewardSnipingRegressionTest is Test {
         uint256 restarts;
         for (uint256 i; i < 20; i++) {
             vm.warp(_now() + 1 days);
-            uint256 need = _leftover() / 100 + 1;
+            uint256 need = _leftover() / 10 + 1;
             uint256 pfBefore = staking.periodFinish();
             stock.mint(address(staking), need);
             donated += need;
             staking.notifyRewardAmount();
             if (staking.periodFinish() != pfBefore) restarts++;
         }
-        assertEq(restarts, 20, "each donation of just over 1% of the leftover restarts the period");
+        assertEq(restarts, 20, "each donation of just over 10% of the leftover restarts the period");
         assertGt(donated, 100e18, "but 20 restarts cost over 10% of the stream, all of which the stakers keep");
     }
 
@@ -330,13 +330,15 @@ contract StocksStakingRewardSnipingRegressionTest is Test {
             bool active = _now() < pfBefore;
             uint256 leftover = _leftover();
             uint256 remaining = active ? pfBefore - _now() : 0;
+            // The rule is cumulative since the last start or restart (Sherlock review).
+            uint256 addedBefore = staking.inflowsSinceRestart();
 
             _inflow(reward);
 
             if (!active) {
                 assertEq(staking.periodFinish(), _now() + DURATION);
                 assertEq(staking.rewardRate(), reward / DURATION);
-            } else if (reward * 100 >= leftover) {
+            } else if ((addedBefore + reward) * 10 >= leftover) {
                 assertEq(staking.periodFinish(), _now() + DURATION, "material: full restart");
                 assertLe(staking.rewardRate() * DURATION, reward + leftover, "never streams more than inflow + leftover");
                 assertGe(staking.rewardRate() * DURATION + DURATION, reward + leftover, "and loses at most one rounding step");

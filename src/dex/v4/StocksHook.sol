@@ -52,7 +52,10 @@ import {ITWAMM} from "./twamm/vendor/ITWAMM.sol";
 ///    Only exact-input swaps are supported; exact-output swaps revert.
 ///  - The same cost on TWAMM orders. The hook's own TWAMM swaps do not pass through its swap hooks, so orders
 ///    are charged separately: the protocol's stock share when a stock-selling order is submitted, and the
-///    rest on proceeds each time an order is synced.
+///    rest on proceeds each time an order is synced. The skip is v4-core behaviour, not this contract's: the
+///    Hooks library does not call beforeSwap/afterSwap for a swap whose caller is the hook itself (Sherlock
+///    #34; pinned by test/SherlockFix.twammFillSingleCharge.t.sol). A v4-core change there would charge
+///    every fill twice.
 ///  - Fail-open TWAMM catch-up. Pending orders are executed at the start of every swap and liquidity change.
 ///    If that execution reverts the user's action still goes ahead, unless the revert looks like deliberate
 ///    gas starvation.
@@ -99,8 +102,11 @@ contract StocksHook is TWAMM {
     /// @notice Registration record of each pool.
     mapping(PoolId => LaunchInfo) public launches;
     /// @notice Uniswap-v2-style cumulative price of currency0, updated on swaps through the hook.
+    /// @dev Not updated when TWAMM orders execute without an ordinary swap in the same transaction, so the time
+    /// after such an execution is credited at the price from before it. Not to be used as a price oracle.
     mapping(PoolId => uint256) public price0CumulativeLast;
     /// @notice Uniswap-v2-style cumulative price of currency1, updated on swaps through the hook.
+    /// @dev Same limitation as `price0CumulativeLast`.
     mapping(PoolId => uint256) public price1CumulativeLast;
     /// @notice Timestamp of each pool's last accumulator update.
     mapping(PoolId => uint32) public blockTimestampLast;
@@ -183,7 +189,8 @@ contract StocksHook is TWAMM {
     error TwammExecutionOutOfGas();
     /// @notice Only full-range liquidity may be added.
     error NonFullRangeLiquidityNotAllowed();
-    /// @notice A price limit truncated a buy so far that the cut already taken would be at least the whole fill.
+    /// @notice A price limit stopped a buy short of its full specified input; buys must fill completely, since the
+    /// protocol's cut was taken on the full input (Sherlock #26).
     error PreSwapCutWouldExceedActualFill();
     /// @notice `pumpTwammBacklog` was called with zero steps, a zero step, or for an uninitialized pool.
     error NothingToPump();
@@ -471,13 +478,14 @@ contract StocksHook is TWAMM {
             // than attempting a partial refund here (afterSwap's own returned delta can only adjust the
             // UNSPECIFIED/output currency, never the specified/input stock side the cut was taken from, and a
             // raw ERC20 refund to `sender` risks landing in a router contract instead of the real trader), the
-            // trade simply reverts outright when the cut would consume the entire real fill or more, so the
-            // trader gets nothing worse than "try again with a wider limit," never a one-sided loss. Normal,
-            // untruncated trades are unaffected: the cut is only ~2% of stockIn, always far below the ~98%
-            // that actually reaches the pool.
+            // trade simply reverts outright whenever the price limit stopped it short of the full input, so the
+            // trader gets nothing worse than "try again with a wider limit," never a one-sided loss. (It used
+            // to revert only when the cut was at least the whole fill, which still let a partial fill pay a
+            // cut many times its intended rate -- Sherlock review.) Untruncated trades are unaffected: the
+            // pool always swaps exactly `stockIn - preSwapStockCut`.
             uint256 actualCoreStockSwapped =
                 uint256(uint128(specifiedIsCurrency0 ? -delta.amount0() : -delta.amount1()));
-            if (preSwapStockCut >= actualCoreStockSwapped) revert PreSwapCutWouldExceedActualFill();
+            if (actualCoreStockSwapped < stockIn - preSwapStockCut) revert PreSwapCutWouldExceedActualFill();
         }
 
         // The swap's output. Not positive only if nothing was filled, in which case there is nothing to charge.
@@ -727,7 +735,8 @@ contract StocksHook is TWAMM {
     // function repeatedly, by hand, already allowed.
     /// @notice Executes a pool's pending TWAMM orders in bounded steps.
     /// @param key The pool key.
-    /// @param stepSeconds How far to advance per step.
+    /// @param stepSeconds How far to advance per step. Should be a multiple of `expirationInterval`: execution only
+    /// advances in whole intervals, so a shorter step spends gas without making progress.
     /// @param maxSteps The most steps to take in this call.
     function pumpTwammBacklog(PoolKey calldata key, uint256 stepSeconds, uint256 maxSteps) external {
         if (stepSeconds == 0 || maxSteps == 0) revert NothingToPump();
