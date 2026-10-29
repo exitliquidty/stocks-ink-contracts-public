@@ -127,9 +127,14 @@ contract StocksGovernor is
         revert VotingSettingsAreImmutable();
     }
 
+    /// @notice Always reverts: the proposal threshold is immutable (Sherlock #22: the inherited setter changed
+    /// nothing but emitted a misleading event).
+    function setProposalThreshold(uint256) public pure override {
+        revert VotingSettingsAreImmutable();
+    }
+
     /// @notice Votes needed to create a proposal: `proposalThresholdBps` of the current circulating supply.
-    /// @dev The inherited `setProposalThreshold` stays callable through a passed proposal but is inert: this
-    /// function never reads the value it stores, so the only effect is its event.
+    /// @dev `proposalThresholdBps` is immutable and the inherited setter reverts.
     /// @return The threshold, in votes.
     function proposalThreshold() public view override(Governor, GovernorSettings) returns (uint256) {
         IERC20 votesToken = IERC20(address(token()));
