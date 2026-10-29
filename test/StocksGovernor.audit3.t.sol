@@ -48,7 +48,7 @@ contract StocksGovernorAudit3Test is Test {
         token.delegate(alice);
 
         gov = new StocksGovernor(
-            "Tesla Stock Governor", IVotes(address(token)), VOTING_DELAY, VOTING_PERIOD, 0, QUORUM_NUMERATOR
+            "Tesla Stock Governor", IVotes(address(token)), VOTING_DELAY, VOTING_PERIOD, 1, QUORUM_NUMERATOR
         );
 
         vm.warp(block.timestamp + 1);

@@ -82,6 +82,8 @@ contract StocksGovernor is
     /// @notice The proposal threshold exceeds 100%.
     /// @param proposalThresholdBps The value supplied.
     error ProposalThresholdBpsTooHigh(uint256 proposalThresholdBps);
+    /// @notice The proposal threshold is zero, which would let anyone create proposals (Sherlock #29).
+    error ProposalThresholdBpsZero();
 
     /// @notice Fixes the governor's settings for good.
     /// @param name_ Governor name; also its EIP-712 domain name, so at most 31 bytes.
@@ -109,6 +111,7 @@ contract StocksGovernor is
             revert QuorumNumeratorTooLow(quorumNumerator_, MIN_QUORUM_NUMERATOR);
         }
         if (proposalThresholdBps_ > BPS_DENOM) revert ProposalThresholdBpsTooHigh(proposalThresholdBps_);
+        if (proposalThresholdBps_ == 0) revert ProposalThresholdBpsZero();
         proposalThresholdBps = proposalThresholdBps_;
     }
 
