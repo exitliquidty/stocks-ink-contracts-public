@@ -144,9 +144,10 @@ contract StocksStaking is ReentrancyGuard {
     /// @dev Shortest reward period accepted by the constructor.
     uint256 private constant MIN_REWARDS_DURATION = 1 hours;
 
-    /// @dev An inflow restarts the reward period if it is at least 1/100 of what is still left to stream. Below
-    /// that it is added to the time remaining, so dust donations cannot keep pushing the period out.
-    uint256 private constant MATERIAL_INFLOW_DIVISOR = 100;
+    /// @dev Inflows restart the reward period once those added since the last start or restart total at least
+    /// 1/10 of what is still left to stream. Below that they are added to the time remaining, so dust donations
+    /// cannot keep pushing the period out.
+    uint256 private constant MATERIAL_INFLOW_DIVISOR = 10;
 
     /// @notice Shortest reward period governance may set.
     uint256 public constant MIN_GOVERNABLE_REWARDS_DURATION = 1 days;
@@ -195,6 +196,11 @@ contract StocksStaking is ReentrancyGuard {
     /// @notice The part of the stock balance the reward accounting has recognised. Stock above this has arrived
     /// but has not yet been added to the stream.
     uint256 public lastNotifiedBalance;
+    /// @notice Inflows added to the running period without restarting it, since it last started or restarted.
+    /// @dev Judging each inflow on its own let a material amount be split into immaterial pieces (Sherlock
+    /// review). Not reduced when a redemption or liquidation shrinks the stream: a smaller leftover only makes
+    /// the next restart come sooner, and a restart never shortens anyone's vesting.
+    uint256 public inflowsSinceRestart;
 
     /// @notice Whether governance has paused the reward stream.
     bool public rewardsPaused;
@@ -756,11 +762,15 @@ contract StocksStaking is ReentrancyGuard {
         if (block.timestamp >= periodFinish) {
             rewardRate = reward / rewardsDuration;
             periodFinish = block.timestamp + rewardsDuration;
+            inflowsSinceRestart = 0;
         } else {
             uint256 remaining = periodFinish - block.timestamp;
             // What the running period still has to pay out.
             uint256 leftover = remaining * rewardRate;
-            if (reward * MATERIAL_INFLOW_DIVISOR >= leftover) {
+            // Materiality is judged on everything added since the last start or restart, not on this inflow
+            // alone, so splitting one inflow into many cannot avoid the restart.
+            uint256 added = inflowsSinceRestart + reward;
+            if (added * MATERIAL_INFLOW_DIVISOR >= leftover) {
                 // A restart must never SHORTEN the vesting of the existing leftover. Spreading it over a
                 // longer window is exactly what makes the restart rule a defence against late staking: a
                 // latecomer cannot capture what is already in the pot without staying for it. If governance
@@ -772,11 +782,13 @@ contract StocksStaking is ReentrancyGuard {
                 uint256 restartDuration = rewardsDuration > remaining ? rewardsDuration : remaining;
                 rewardRate = (reward + leftover) / restartDuration;
                 periodFinish = block.timestamp + restartDuration;
+                inflowsSinceRestart = 0;
             } else {
 
                 // An immaterial arrival does not move the period's end; it is spread over the time left. Anything lost to
                 // the division stays in the treasury.
                 rewardRate += reward / remaining;
+                inflowsSinceRestart = added;
             }
         }
         lastUpdateTime = block.timestamp;
