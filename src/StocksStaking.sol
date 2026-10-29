@@ -96,8 +96,9 @@ interface IStocksHookMinimal {
 ///    `notifyRewardAmount`. Any stock that arrives, from the hook or as a plain transfer, is treated the same
 ///    way: it is added to a reward stream.
 ///  - Rewards. A Synthetix-style stream: `rewardRate` stock per second until `periodFinish`, shared by stakers
-///    in proportion to stake. An inflow of at least 1/100 of what is still left to stream restarts the period
-///    (never shortening it), so a late large inflow cannot be captured by a stake that arrives just after it;
+///    in proportion to stake. Inflows totalling at least 1/10 of what is still left to stream, counted since the
+///    last start or restart, restart the period (never shortening it), so a late large inflow cannot be captured
+///    by a stake that arrives just after it;
 ///    smaller inflows are added to the time remaining. While nobody is staked, time passes and that part of
 ///    the stream stays in the treasury unassigned. Staking has no lock.
 ///  - What belongs to whom. Stock already earned by stakers ("vested") is theirs and nothing else can touch
@@ -470,7 +471,8 @@ contract StocksStaking is ReentrancyGuard {
 
     /// @notice Changes the reward period for future periods. Governor only.
     /// @dev Does not touch the period already running: a later restart runs over the longer of the new period
-    /// and the time still left, so lowering the period can never speed up what is already streaming.
+    /// and the time still left, so lowering the period can never speed up what is already streaming. With
+    /// nothing left to stream, a restart runs over the new period.
     /// @param newDuration The new period: a whole number of days, from 1 to 365.
     function setRewardsDuration(uint256 newDuration) external onlyGovernor {
         if (
@@ -748,7 +750,8 @@ contract StocksStaking is ReentrancyGuard {
 
     /// @dev Brings the accumulator up to date, then adds any newly arrived stock to the stream. After the period
     /// has ended the inflow starts a new one. During a period a material inflow restarts it over the longer of
-    /// `rewardsDuration` and the time left, and an immaterial one is spread over the time left. Does nothing
+    /// `rewardsDuration` and the time left (over `rewardsDuration` alone when nothing is left to stream), and an
+    /// immaterial one is spread over the time left. Does nothing
     /// with new stock while rewards are paused.
     function _notifyReward() internal {
         // Bring the accumulator up to date before anything that affects the rate.

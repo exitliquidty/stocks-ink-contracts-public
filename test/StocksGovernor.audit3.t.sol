@@ -130,7 +130,7 @@ contract StocksGovernorAudit3Test is Test {
         console.log("CONFIRMED FIXED: votingPeriod can never be collapsed via governance, closing the near-instant-second-proposal escalation");
     }
 
-    /// @dev Confirms setProposalThreshold is reachable but inert -- StocksGovernor's own override
+    /// @dev Sherlock #22: setProposalThreshold now reverts like the other setters. StocksGovernor's own override
     /// ignores GovernorSettings' stored value entirely, so this specific setter poses no risk.
     function test_SetProposalThreshold_Reverts() public {
         uint256 before = gov.proposalThreshold();

@@ -189,7 +189,8 @@ contract StocksHook is TWAMM {
     error TwammExecutionOutOfGas();
     /// @notice Only full-range liquidity may be added.
     error NonFullRangeLiquidityNotAllowed();
-    /// @notice A price limit truncated a buy so far that the cut already taken would be at least the whole fill.
+    /// @notice A price limit stopped a buy short of its full specified input; buys must fill completely, since the
+    /// protocol's cut was taken on the full input (Sherlock #26).
     error PreSwapCutWouldExceedActualFill();
     /// @notice `pumpTwammBacklog` was called with zero steps, a zero step, or for an uninitialized pool.
     error NothingToPump();

@@ -99,7 +99,7 @@ contract StocksLaunchFactory is ReentrancyGuard {
     error InvalidVotingPeriod();
     /// @notice The configured graduation threshold is zero.
     error InvalidGraduationThreshold();
-    /// @notice The configured proposal threshold exceeds 100%.
+    /// @notice The configured proposal threshold is zero or exceeds 100%.
     error InvalidProposalThreshold();
     /// @notice The token name is too long for the governor that graduation will deploy (see MAX_TST_NAME_BYTES).
     error NameTooLongForGraduation();
