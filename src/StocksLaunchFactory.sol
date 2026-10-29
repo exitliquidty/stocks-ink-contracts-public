@@ -166,7 +166,8 @@ contract StocksLaunchFactory is ReentrancyGuard {
         if (_votingDelay < MIN_VOTING_DELAY) revert InvalidVotingDelay();
         if (_votingPeriod < MIN_VOTING_PERIOD) revert InvalidVotingPeriod();
         if (_graduationUsdThreshold == 0) revert InvalidGraduationThreshold();
-        if (_proposalThresholdBps > 10_000) revert InvalidProposalThreshold();
+        // Zero would let anyone create proposals (Sherlock #29).
+        if (_proposalThresholdBps == 0 || _proposalThresholdBps > 10_000) revert InvalidProposalThreshold();
 
         trustedSigner = _trustedSigner;
         protocol = _protocol;
