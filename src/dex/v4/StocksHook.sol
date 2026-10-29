@@ -99,8 +99,11 @@ contract StocksHook is TWAMM {
     /// @notice Registration record of each pool.
     mapping(PoolId => LaunchInfo) public launches;
     /// @notice Uniswap-v2-style cumulative price of currency0, updated on swaps through the hook.
+    /// @dev Not updated when TWAMM orders execute without an ordinary swap in the same transaction, so the time
+    /// after such an execution is credited at the price from before it. Not to be used as a price oracle.
     mapping(PoolId => uint256) public price0CumulativeLast;
     /// @notice Uniswap-v2-style cumulative price of currency1, updated on swaps through the hook.
+    /// @dev Same limitation as `price0CumulativeLast`.
     mapping(PoolId => uint256) public price1CumulativeLast;
     /// @notice Timestamp of each pool's last accumulator update.
     mapping(PoolId => uint32) public blockTimestampLast;
@@ -728,7 +731,8 @@ contract StocksHook is TWAMM {
     // function repeatedly, by hand, already allowed.
     /// @notice Executes a pool's pending TWAMM orders in bounded steps.
     /// @param key The pool key.
-    /// @param stepSeconds How far to advance per step.
+    /// @param stepSeconds How far to advance per step. Should be a multiple of `expirationInterval`: execution only
+    /// advances in whole intervals, so a shorter step spends gas without making progress.
     /// @param maxSteps The most steps to take in this call.
     function pumpTwammBacklog(PoolKey calldata key, uint256 stepSeconds, uint256 maxSteps) external {
         if (stepSeconds == 0 || maxSteps == 0) revert NothingToPump();
