@@ -629,7 +629,9 @@ contract StocksStaking is ReentrancyGuard {
 
     /// @notice Burns the caller's TST for its share of the redeemable treasury, paid in stock.
     /// @dev The share is `tstAmount / nonBurnedSupply()` of `redeemableStock()`, less the flywheel cost. The rate
-    /// for holders who stay never falls as a result, because the cost's treasury share stays behind.
+    /// for holders who stay never falls as a result, because the cost's treasury share stays behind. A partial
+    /// redeemer keeps a claim on that share through their remaining TST, so the payout depends on the size and
+    /// order of redemptions, and splitting one redemption into several pays slightly more in total.
     /// @param tstAmount TST to burn. Must be approved to this contract.
     /// @param minStockOut Smallest acceptable payout.
     /// @return stockOut Stock paid to the caller.
