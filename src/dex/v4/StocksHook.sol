@@ -52,7 +52,10 @@ import {ITWAMM} from "./twamm/vendor/ITWAMM.sol";
 ///    Only exact-input swaps are supported; exact-output swaps revert.
 ///  - The same cost on TWAMM orders. The hook's own TWAMM swaps do not pass through its swap hooks, so orders
 ///    are charged separately: the protocol's stock share when a stock-selling order is submitted, and the
-///    rest on proceeds each time an order is synced.
+///    rest on proceeds each time an order is synced. The skip is v4-core behaviour, not this contract's: the
+///    Hooks library does not call beforeSwap/afterSwap for a swap whose caller is the hook itself (Sherlock
+///    #34; pinned by test/SherlockFix.twammFillSingleCharge.t.sol). A v4-core change there would charge
+///    every fill twice.
 ///  - Fail-open TWAMM catch-up. Pending orders are executed at the start of every swap and liquidity change.
 ///    If that execution reverts the user's action still goes ahead, unless the revert looks like deliberate
 ///    gas starvation.
