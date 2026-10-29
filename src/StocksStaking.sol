@@ -784,7 +784,10 @@ contract StocksStaking is ReentrancyGuard {
                 // permissionless anyone could stake, force it, and collect the compressed stream. Taking
                 // the longer of the two keeps the new duration in force for future periods while leaving
                 // the current leftover on at least its original schedule.
-                uint256 restartDuration = rewardsDuration > remaining ? rewardsDuration : remaining;
+                // With nothing left to stream there is nothing to protect, so the period starts fresh over
+                // `rewardsDuration` (Sherlock #28: otherwise dust inflows could keep a zero-rate window alive
+                // and the next real inflow would vest over it instead of the configured duration).
+                uint256 restartDuration = (leftover > 0 && remaining > rewardsDuration) ? remaining : rewardsDuration;
                 rewardRate = (reward + leftover) / restartDuration;
                 periodFinish = block.timestamp + restartDuration;
                 inflowsSinceRestart = 0;
