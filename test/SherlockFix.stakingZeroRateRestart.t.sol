@@ -15,8 +15,10 @@ import {MockHookV5} from "./mocks/MockHookV5.sol";
 /// `max(rewardsDuration, remaining)`. Repeated 1-wei inflows kept a zero-rate window alive and the next real
 /// inflow vested over that window instead of the duration governance had set.
 ///
-/// The fix: with nothing left to stream a restart uses `rewardsDuration` only. The longer-of-the-two rule still
-/// applies while there is a leftover to protect.
+/// The fix: `setRewardsDuration` records what the running period still owed when the duration is cut below the
+/// time it had left, and a restart keeps that time only until the inflows since the cut reach ten times the
+/// recorded leftover (mirroring the materiality bar). A zero or dust leftover is therefore not protected and the
+/// period starts fresh over `rewardsDuration`. The longer-of-the-two rule still holds for a leftover worth it.
 contract SherlockStakingZeroRateRestartTest is Test {
     MockERC20 tst;
     MockERC20 stock;
@@ -64,9 +66,13 @@ contract SherlockStakingZeroRateRestartTest is Test {
     }
 
     function _ping() internal {
-        stock.mint(griefer, 1);
+        _pingWith(1);
+    }
+
+    function _pingWith(uint256 amount) internal {
+        stock.mint(griefer, amount);
         vm.prank(griefer);
-        stock.transfer(address(staking), 1);
+        stock.transfer(address(staking), amount);
         vm.prank(griefer);
         staking.notifyRewardAmount();
     }
@@ -110,6 +116,29 @@ contract SherlockStakingZeroRateRestartTest is Test {
         assertApproxEqAbs(staking.pendingReward(staker) - earnedBefore, 100e18, 1e6);
     }
 
+    /// @dev Fix-review follow-up: the same griefing with a NONZERO dust rate. Pings of `DURATION` wei give a rate
+    /// of 1 wei a second, so the leftover is never zero, yet a real inflow must still vest over `rewardsDuration`.
+    function test_DustRatePingsOnRunningPeriod_DoNotStretchTheNextRealInflow() public {
+        _pingWith(DURATION);
+        assertEq(staking.rewardRate(), 1, "a DURATION-wei period streams 1 wei a second");
+        for (uint256 i; i < 5; ++i) {
+            vm.warp(_now() + 1 days);
+            _pingWith(DURATION);
+            assertGt(staking.rewardRate(), 0);
+            assertEq(staking.periodFinish() - _now(), DURATION, "each dust ping renews the window");
+        }
+
+        vm.prank(governor);
+        staking.setRewardsDuration(1 days);
+        uint256 earnedBefore = staking.pendingReward(staker);
+        _realInflow();
+
+        assertEq(staking.periodFinish() - _now(), 1 days, "a dust leftover is not worth a stale window");
+
+        vm.warp(_now() + 1 days);
+        assertApproxEqAbs(staking.pendingReward(staker) - earnedBefore, 100e18, 1e7, "whole inflow vested in 1 day");
+    }
+
     /// @dev The protection the longer-of-the-two rule exists for is untouched: with a real leftover, lowering
     /// the duration below the time left still restarts over the time left.
     function test_WithLeftover_RestartStillNeverShortensVesting() public {
@@ -119,5 +148,30 @@ contract SherlockStakingZeroRateRestartTest is Test {
         staking.setRewardsDuration(1 days);
         _realInflow(); // material: restarts
         assertEq(staking.periodFinish() - _now(), 20 days, "leftover keeps its remaining schedule");
+    }
+
+    /// @dev The bar: the leftover recorded at the cut keeps its schedule until ten times it has arrived since. Above
+    /// that the restarter has paid more than ten times the leftover to compress it, which is no way to capture it.
+    function test_WithLeftover_OnlyAnInflowOverTenTimesItCompressesIt() public {
+        _realInflow(); // 100e18 over 30 days
+        vm.warp(_now() + 10 days); // leftover = 20/30 * 100e18 (minus rounding)
+        uint256 leftover = (staking.periodFinish() - _now()) * staking.rewardRate();
+        vm.prank(governor);
+        staking.setRewardsDuration(1 days);
+
+        // Exactly ten times the leftover: still protected (a tenth is material, as for inflows).
+        stock.mint(address(staking), leftover * 10);
+        staking.notifyRewardAmount();
+        assertEq(staking.periodFinish() - _now(), 20 days, "ten times the leftover keeps its schedule");
+
+        // The protection has now been used up (ten times the recorded leftover has arrived). An immaterial wei
+        // changes nothing, as it never does; the next MATERIAL inflow restarts over rewardsDuration.
+        stock.mint(address(staking), 1);
+        staking.notifyRewardAmount();
+        assertEq(staking.periodFinish() - _now(), 20 days, "an immaterial inflow never moves the period");
+        uint256 leftover2 = (staking.periodFinish() - _now()) * staking.rewardRate();
+        stock.mint(address(staking), leftover2 / 10 + 1);
+        staking.notifyRewardAmount();
+        assertEq(staking.periodFinish() - _now(), 1 days, "the next material inflow restarts fresh");
     }
 }

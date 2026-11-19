@@ -247,9 +247,15 @@ contract StocksStakingRestartNeverShortensRegressionTest is Test {
         reward = bound(reward, leftover / 10 + 1, 1_000_000e18); // always material
         _inflow(reward);
 
-        uint256 expected = newDays * 1 days > remaining ? newDays * 1 days : remaining;
-        assertEq(staking.periodFinish(), _now() + expected, "restart runs over max(duration, time left)");
-        assertGe(staking.periodFinish(), pfBefore, "periodFinish never moves earlier");
+        // The leftover recorded at the cut keeps its schedule until the inflows since the cut exceed ten times it
+        // (Sherlock #28 fix review). Here the cut is immediately followed by one inflow, so that is this inflow
+        // against this leftover: below a tenth of it the leftover is dust next to the new money.
+        bool leftoverProtected = leftover * 10 >= reward;
+        uint256 expected = leftoverProtected && remaining > newDays * 1 days ? remaining : newDays * 1 days;
+        assertEq(staking.periodFinish(), _now() + expected, "restart runs over max(duration, time left) for a material leftover");
+        if (leftoverProtected) {
+            assertGe(staking.periodFinish(), pfBefore, "periodFinish never moves earlier while the leftover is material");
+        }
         assertLe(staking.rewardRate() * expected, reward + leftover, "never streams more than inflow + leftover");
         assertGe(staking.rewardRate() * expected + expected, reward + leftover, "and loses at most one rounding step");
     }

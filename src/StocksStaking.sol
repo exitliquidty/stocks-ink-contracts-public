@@ -147,9 +147,8 @@ contract StocksStaking is ReentrancyGuard {
 
     /// @dev Inflows restart the reward period once those added since the last start or restart total at least
     /// 1/10 of what is still left to stream. Below that they are added to the time remaining, so dust donations
-    /// cannot keep pushing the period out. The one exception is a stream whose rate is zero (after a liquidation
-    /// has committed all of it): nothing is left, so any inflow restarts the period. Nothing is being streamed
-    /// then, so that delays nothing, and a real inflow would restart it in the same way.
+    /// cannot keep pushing the period out. The same 1/10 bar decides how long a restart keeps protecting the
+    /// leftover from a duration cut (see `leftoverAtDurationCut`).
     uint256 private constant MATERIAL_INFLOW_DIVISOR = 10;
 
     /// @notice Shortest reward period governance may set.
@@ -202,8 +201,20 @@ contract StocksStaking is ReentrancyGuard {
     /// @notice Inflows added to the running period without restarting it, since it last started or restarted.
     /// @dev Judging each inflow on its own let a material amount be split into immaterial pieces (Sherlock
     /// review). Not reduced when a redemption or liquidation shrinks the stream: a smaller leftover only makes
-    /// the next restart come sooner, and a restart never shortens anyone's vesting.
+    /// the next restart come sooner, and a restart never shortens the vesting of a leftover worth protecting.
     uint256 public inflowsSinceRestart;
+    /// @notice What the running period still had to stream when governance last cut `rewardsDuration` below the
+    /// time that period had left. Zero when the last duration change was not such a cut.
+    /// @dev A restart keeps the old period's end only to stop this amount being compressed into the shorter
+    /// duration (round 24). The protection lapses once the inflows since the cut reach ten times it: by then the
+    /// old window would mostly be delaying new money, and a leftover that small is dust next to it (Sherlock #28
+    /// and its fix review). Measured once, at the cut, so that inflows landing in the protected window cannot
+    /// themselves become the thing being protected, which is how a few wei a second could otherwise pin it.
+    /// A liquidation or redemption that takes stock out of the stream lowers it to what is left streaming, so a
+    /// leftover that has since left is not protected either.
+    uint256 public leftoverAtDurationCut;
+    /// @notice Stock added to the stream since governance last changed `rewardsDuration`.
+    uint256 public inflowsSinceDurationCut;
 
     /// @notice Whether governance has paused the reward stream.
     bool public rewardsPaused;
@@ -470,9 +481,10 @@ contract StocksStaking is ReentrancyGuard {
     }
 
     /// @notice Changes the reward period for future periods. Governor only.
-    /// @dev Does not touch the period already running: a later restart runs over the longer of the new period
-    /// and the time still left, so lowering the period can never speed up what is already streaming. With
-    /// nothing left to stream, a restart runs over the new period.
+    /// @dev Does not touch the period already running. A later restart runs over the time still left rather
+    /// than the new, shorter period while what that period had left at the cut is still worth protecting: until
+    /// the inflows since the cut reach ten times it. A zero or dust leftover therefore gives no protection, and a
+    /// real one is never compressed by anyone who has not delivered ten times its value.
     /// @param newDuration The new period: a whole number of days, from 1 to 365.
     function setRewardsDuration(uint256 newDuration) external onlyGovernor {
         if (
@@ -481,7 +493,14 @@ contract StocksStaking is ReentrancyGuard {
         ) {
             revert InvalidGovernableRewardsDuration();
         }
-        // Takes effect at the next period start or restart; the running period is left alone.
+        // Takes effect at the next period start or restart; the running period is left alone. A cut below the
+        // time it has left records what it still owes, so restarts protect exactly that (see
+        // `leftoverAtDurationCut`). While paused the reward clock stands at `pausedAt`, and the period's end is
+        // pushed out by the pause on resume, so the time left is measured from there.
+        uint256 clock = rewardsPaused ? pausedAt : block.timestamp;
+        uint256 remaining = periodFinish > clock ? periodFinish - clock : 0;
+        leftoverAtDurationCut = newDuration < remaining ? remaining * rewardRate : 0;
+        inflowsSinceDurationCut = 0;
         emit RewardsDurationSet(rewardsDuration, newDuration);
         rewardsDuration = newDuration;
     }
@@ -565,6 +584,8 @@ contract StocksStaking is ReentrancyGuard {
             // In practice this zeroes the rate, since everything not yet vested was committed.
             uint256 reduction = stockCommitted < outstanding ? stockCommitted : outstanding;
             rewardRate = (outstanding - reduction) / remaining;
+            // What a duration cut recorded for protection cannot exceed what is still streaming.
+            if (leftoverAtDurationCut > outstanding - reduction) leftoverAtDurationCut = outstanding - reduction;
         }
 
         _notifyReward();
@@ -745,14 +766,16 @@ contract StocksStaking is ReentrancyGuard {
         if (fromStream > 0 && remaining > 0) {
             if (fromStream > outstanding) fromStream = outstanding;
             rewardRate = (outstanding - fromStream) / remaining;
+            // What a duration cut recorded for protection cannot exceed what is still streaming.
+            if (leftoverAtDurationCut > outstanding - fromStream) leftoverAtDurationCut = outstanding - fromStream;
         }
     }
 
     /// @dev Brings the accumulator up to date, then adds any newly arrived stock to the stream. After the period
-    /// has ended the inflow starts a new one. During a period a material inflow restarts it over the longer of
-    /// `rewardsDuration` and the time left (over `rewardsDuration` alone when nothing is left to stream), and an
-    /// immaterial one is spread over the time left. Does nothing
-    /// with new stock while rewards are paused.
+    /// has ended the inflow starts a new one. During a period a material inflow restarts it over `rewardsDuration`,
+    /// or over the time left when that is longer and the leftover from a duration cut is still protected (see
+    /// `leftoverAtDurationCut`); an immaterial one is spread over the time left. Does nothing with new stock while
+    /// rewards are paused.
     function _notifyReward() internal {
         // Bring the accumulator up to date before anything that affects the rate.
         rewardPerTokenStored = rewardPerToken();
@@ -769,6 +792,7 @@ contract StocksStaking is ReentrancyGuard {
         if (currentBalance <= lastNotifiedBalance) return;
         uint256 reward = currentBalance - lastNotifiedBalance;
         lastNotifiedBalance = currentBalance;
+        inflowsSinceDurationCut += reward;
 
         // No period is running: the arrival starts a fresh one over the full duration.
         if (block.timestamp >= periodFinish) {
@@ -783,18 +807,22 @@ contract StocksStaking is ReentrancyGuard {
             // alone, so splitting one inflow into many cannot avoid the restart.
             uint256 added = inflowsSinceRestart + reward;
             if (added * MATERIAL_INFLOW_DIVISOR >= leftover) {
-                // A restart must never SHORTEN the vesting of the existing leftover. Spreading it over a
+                // A restart must never SHORTEN the vesting of a leftover worth protecting. Spreading it over a
                 // longer window is exactly what makes the restart rule a defence against late staking: a
                 // latecomer cannot capture what is already in the pot without staying for it. If governance
-                // lowers `rewardsDuration` below the time left on the current period, restarting over the
-                // raw new duration would compress that leftover instead, and since the restart trigger is
-                // permissionless anyone could stake, force it, and collect the compressed stream. Taking
-                // the longer of the two keeps the new duration in force for future periods while leaving
-                // the current leftover on at least its original schedule.
-                // With nothing left to stream there is nothing to protect, so the period starts fresh over
-                // `rewardsDuration` (Sherlock #28: otherwise dust inflows could keep a zero-rate window alive
-                // and the next real inflow would vest over it instead of the configured duration).
-                uint256 restartDuration = (leftover > 0 && remaining > rewardsDuration) ? remaining : rewardsDuration;
+                // cuts `rewardsDuration` below the time left on the current period, restarting over the raw
+                // new duration would compress that leftover instead, and since the restart trigger is
+                // permissionless anyone could stake, force it, and collect the compressed stream. So while the
+                // leftover recorded at the cut is still material next to everything added since (at least a
+                // tenth of it, the same bar an inflow has to clear above), the restart keeps the time left.
+                // Once the inflows since the cut pass ten times that leftover the protection lapses and the
+                // period runs over `rewardsDuration`: the old window would by then be delaying mostly new money
+                // (Sherlock #28: a zero or dust leftover, a few wei a second kept alive by tiny deposits, must
+                // not pin a stale window over the next real inflow). Compressing a real leftover this way costs
+                // the restarter ten times what the leftover is worth, so it is no way to capture it.
+                bool leftoverProtected = remaining > rewardsDuration
+                    && leftoverAtDurationCut * MATERIAL_INFLOW_DIVISOR >= inflowsSinceDurationCut;
+                uint256 restartDuration = leftoverProtected ? remaining : rewardsDuration;
                 rewardRate = (reward + leftover) / restartDuration;
                 periodFinish = block.timestamp + restartDuration;
                 inflowsSinceRestart = 0;
