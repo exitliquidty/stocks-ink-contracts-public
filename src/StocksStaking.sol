@@ -210,6 +210,8 @@ contract StocksStaking is ReentrancyGuard {
     /// old window would mostly be delaying new money, and a leftover that small is dust next to it (Sherlock #28
     /// and its fix review). Measured once, at the cut, so that inflows landing in the protected window cannot
     /// themselves become the thing being protected, which is how a few wei a second could otherwise pin it.
+    /// A liquidation or redemption that takes stock out of the stream lowers it to what is left streaming, so a
+    /// leftover that has since left is not protected either.
     uint256 public leftoverAtDurationCut;
     /// @notice Stock added to the stream since governance last changed `rewardsDuration`.
     uint256 public inflowsSinceDurationCut;
@@ -582,6 +584,8 @@ contract StocksStaking is ReentrancyGuard {
             // In practice this zeroes the rate, since everything not yet vested was committed.
             uint256 reduction = stockCommitted < outstanding ? stockCommitted : outstanding;
             rewardRate = (outstanding - reduction) / remaining;
+            // What a duration cut recorded for protection cannot exceed what is still streaming.
+            if (leftoverAtDurationCut > outstanding - reduction) leftoverAtDurationCut = outstanding - reduction;
         }
 
         _notifyReward();
@@ -762,6 +766,8 @@ contract StocksStaking is ReentrancyGuard {
         if (fromStream > 0 && remaining > 0) {
             if (fromStream > outstanding) fromStream = outstanding;
             rewardRate = (outstanding - fromStream) / remaining;
+            // What a duration cut recorded for protection cannot exceed what is still streaming.
+            if (leftoverAtDurationCut > outstanding - fromStream) leftoverAtDurationCut = outstanding - fromStream;
         }
     }
 
